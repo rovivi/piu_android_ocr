@@ -44,7 +44,8 @@
   y por [INFORME.md](INFORME.md).
   - PNGs de informe: regenerados por `tools/parity/report.py`.
   - GIFs (`field_scan.gif`, `synth_conditions.gif`): generados por
-    `python3 tools/parity/animate.py`.
+    `python3 tools/parity/animate.py`. El hero usa la foto real
+    `imagtest.jpg` de la raíz del repo; si no está, cae a la pantalla sintética.
 - `parity_detail.json` — detalle por foto generado por
   `python3 tools/parity/parity.py --detect --json docs/parity_detail.json`.
   Es un artefacto: no editar a mano.

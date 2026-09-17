@@ -15,10 +15,10 @@ y sin dependencias transitivas. Los campos en los que no se confía se marcan
 para que la app los escale a un VLM.
 
 <p align="center">
-  <img src="docs/img/field_scan.gif" width="620" alt="Qué lee el módulo: título, bolita/nivel, score y rank">
+  <img src="docs/img/field_scan.gif" width="560" alt="Sobre una foto real de cabina: el módulo lee Overnight Flower, DOUBLE nivel 20, score 971041 y rank S">
 </p>
 
-<p align="center"><sub>Qué lee el módulo y dónde — animación generada con <code>tools/parity/animate.py</code></sub></p>
+<p align="center"><sub>Sobre una foto real de cabina: lo que lee y el valor que saca — <code>tools/parity/animate.py</code></sub></p>
 
 ## Contenido
 
