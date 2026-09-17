@@ -124,6 +124,9 @@ class Engine {
  private:
   Templates chars_, level_, digits_;
   Detector det_;
+  // Segunda detección dentro de la pantalla (fullscore) cuando ocupa poco del
+  // encuadre: una foto lejana. Devuelve cajas en coordenadas de la imagen.
+  std::vector<Box> zoomIn(const cv::Mat& img, std::vector<Box> first) const;
 };
 
 }  // namespace piu

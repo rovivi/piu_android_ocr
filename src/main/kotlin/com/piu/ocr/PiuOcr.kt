@@ -17,12 +17,34 @@ import kotlin.math.sqrt
  */
 data class Field<T>(val value: T?, val confidence: Float, val reason: String? = null)
 
+/** Caja en píxeles de la imagen leída. Solo para dibujar sobre la foto; ningún gate la usa. */
+data class Box(val x1: Int, val y1: Int, val x2: Int, val y2: Int)
+
+/** Un candidato del cruce con el catálogo, con el puntaje agrupado entre cajas de título. */
+data class SongCandidate(val name: String, val score: Double)
+
 data class Reading(
     val song: Field<String>,
     val level: Field<Int>,
     val chartType: Field<String>,
     val score: Field<Int>,
     val rawTitle: String,
+    /**
+     * Los mejores candidatos del cruce, de mayor a menor. Cuando `song.value` es null por
+     * `margen_bajo`, los dos primeros son los que empataron: la política sigue siendo no elegir
+     * por ellos; que elija una persona con la foto enfrente.
+     */
+    val candidates: List<SongCandidate> = emptyList(),
+    /** Tamaño de la imagen leída, para normalizar las cajas. 0 si el .so no lo informó. */
+    val imageWidth: Int = 0,
+    val imageHeight: Int = 0,
+    /** Dónde estaba cada cosa. Títulos en el mismo orden que alimentaron [rawTitle]. */
+    val titleBoxes: List<Box> = emptyList(),
+    val scoreBox: Box? = null,
+    val badgeBox: Box? = null,
+    val rankBox: Box? = null,
+    /** La pantalla de resultado entera (fullscore): adonde la app acerca la foto antes de mostrar. */
+    val screenBox: Box? = null,
 ) {
     val needsLlm: List<String> get() = buildList {
         if (song.reason != null || song.value == null) add("song")
@@ -93,11 +115,13 @@ class PiuOcr private constructor(
         val titles = j.optJSONArray("titles") ?: org.json.JSONArray()
         val pooled = HashMap<String, Double>()
         val raws = ArrayList<String>()
+        val titleBoxes = ArrayList<Box>()
         for (i in 0 until minOf(titles.length(), MAX_SONG_BOXES)) {
             val t = titles.getJSONObject(i)
             val raw = t.getString("raw")
             if (raw.isEmpty()) continue
             raws += raw
+            t.optBox("box")?.let { titleBoxes += it }
             // Ponderar por la confianza de la caja: una caja de 0.005 puede ser
             // la respuesta cuando es la única, sin ganarle a una de 0.5.
             val w = sqrt(maxOf(t.optDouble("conf", 1.0), 0.02))
@@ -108,14 +132,57 @@ class PiuOcr private constructor(
         }
         val ranked = pooled.entries.sortedByDescending { it.value }
         val margin = if (ranked.size > 1) ranked[0].value - ranked[1].value else 1.0
-        val songOk = ranked.isNotEmpty() && margin >= MIN_SONG_MARGIN
-        val song = Field(if (songOk) ranked[0].key else null, margin.toFloat(),
-                         if (songOk) null else "margen_bajo")
+        // Dos gates. El margen dice que el pool está decidido; el parecido dice que lo que ganó
+        // se parece a lo LEÍDO. Sin el segundo, el pool ordena bien y separa mal: los ocho
+        // errores del fixture eran nombres cortos (Bee, N, See, Point Break) que ganan sobre
+        // glifos basura porque todo se parece un poco a "N".
+        val clear = ranked.isNotEmpty() && margin >= MIN_SONG_MARGIN
+        val alike = clear && looksLike(raws, ranked[0].key)
+        val song = Field(if (alike) ranked[0].key else null, margin.toFloat(),
+                         when { alike -> null; clear -> "sin_parecido"; else -> "margen_bajo" })
 
         // Con la canción resuelta el catálogo dice qué niveles son legales, y
         // eso reordena los dígitos leídos en vez de solo aceptar el argmax.
         val level = readLevel(j, song.value, chart.value, matcher)
-        return Reading(song, level, chart, readScore(j), raws.joinToString(" | "))
+        return Reading(
+            song, level, chart, readScore(j), raws.joinToString(" | "),
+            candidates = ranked.take(MAX_CANDIDATES).map { SongCandidate(it.key, it.value) },
+            imageWidth = j.optInt("w", 0),
+            imageHeight = j.optInt("h", 0),
+            titleBoxes = titleBoxes,
+            scoreBox = j.optBox("score_box"),
+            badgeBox = j.optBox("badge_box"),
+            rankBox = j.optBox("rank_box"),
+            screenBox = j.optBox("screen_box"),
+        )
+    }
+
+    /**
+     * ¿Alguna de las lecturas crudas se parece al nombre que ganó? difflib ratio sobre lo
+     * normalizado, sin espacios (el mismo `similarity` del matcher).
+     *
+     * Medido sobre las 83 fotos con verdad del fixture, con MIN_SONG_MARGIN 0.010:
+     *   sin este gate        66 bien /  8 mal /  9 null
+     *   piso 0.50            66 bien /  4 mal / 13 null
+     *   piso 0.55            63 bien /  2 mal / 18 null   <- este
+     *   piso 0.70            50 bien /  0 mal / 33 null
+     * Los dos que quedan a 0.55 son nombres de 1 y 3 letras ("N", "Bee") que cualquier
+     * basura roza; por eso un nombre corto exige casi coincidencia exacta.
+     */
+    private fun looksLike(raws: List<String>, name: String): Boolean {
+        val n = SongMatcher.normalize(name).replace(" ", "")
+        if (n.isEmpty()) return false
+        val need = if (n.length <= SHORT_NAME) MIN_RAW_SIMILARITY_SHORT else MIN_RAW_SIMILARITY
+        return raws.any { raw ->
+            val r = SongMatcher.normalize(raw).replace(" ", "")
+            r.isNotEmpty() && SongMatcher.similarity(r, n) >= need
+        }
+    }
+
+    private fun JSONObject.optBox(key: String): Box? {
+        val a = optJSONArray(key) ?: return null
+        if (a.length() != 4) return null
+        return Box(a.getInt(0), a.getInt(1), a.getInt(2), a.getInt(3))
     }
 
     /**
@@ -182,10 +249,15 @@ class PiuOcr private constructor(
 
         // Gates medidos end-to-end con LOSO por foto. Ver MODULO_ANDROID.md §3:
         // cambiarlos degrada el sistema EN SILENCIO.
-        //   canción  0.010 -> cob 0.889 / prec 0.900
-        //            0.015 -> cob 0.800 / prec 0.972   <- este
+        //   canción  0.010 -> cob 0.889 / prec 0.900   <- este (2026-09-09)
+        //            0.015 -> cob 0.800 / prec 0.972
         //            0.030 -> cob 0.756 / prec 0.971
-        const val MIN_SONG_MARGIN = 0.015
+        // Bajado de 0.015 a 0.010 a pedido del owner: la canción era el campo que más
+        // quedaba en null. Compra 9 pts de cobertura por 7 de precisión; la app muestra
+        // la lectura sobre la foto antes de guardar, así que el error se ve. El
+        // fixture de paridad (Python) sigue en 0.015: las fotos en [0.010, 0.015)
+        // difieren hasta regenerarlo con el mismo gate.
+        const val MIN_SONG_MARGIN = 0.010
         // Gate del score, medido con LOSO sobre 52 fotos con score leído a mano
         // (ver pipeline.py MIN_SCORE_MARGIN_SAFE):
         //   0.020 -> cob 0.79 / prec 1.00
@@ -197,8 +269,18 @@ class PiuOcr private constructor(
         // 0.873 y 0.35 da 0.655, porque convierte lecturas buenas en null.
         const val MIN_BADGE_CONF = 0.15f
         const val MAX_SONG_BOXES = 3
+        /** Candidatos que viajan en [Reading.candidates]: los que empatan y uno más de contexto. */
+        const val MAX_CANDIDATES = 3
 
-        private val ASSETS = listOf("chars.bin", "level.bin", "catalog.json",
+        /** Parecido mínimo (difflib ratio) entre alguna lectura cruda y el nombre que ganó. Ver looksLike. */
+        const val MIN_RAW_SIMILARITY = 0.55
+        /** Un nombre de hasta [SHORT_NAME] caracteres exige casi coincidencia: "N" se parece a todo. */
+        const val MIN_RAW_SIMILARITY_SHORT = 0.80
+        const val SHORT_NAME = 3
+
+        // digits.bin ES obligatorio: Engine::load lo exige y sin él create() tiraba
+        // para todo el mundo. Faltaba en esta lista desde que se agregó el score.
+        private val ASSETS = listOf("chars.bin", "level.bin", "digits.bin", "catalog.json",
                                     "piu_yolo.param", "piu_yolo.bin")
 
         /**

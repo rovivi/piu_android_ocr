@@ -1,6 +1,6 @@
 # Módulo Android — COMPILADO
 
-**Estado: el AAR compila y pesa 10.14 MB.** `build/outputs/aar/piu-ocr-release.aar`
+**Estado: el AAR compila y pesa ~22 MB (las cuatro ABIs).** `build/outputs/aar/piu-ocr-release.aar`
 
 Es **un AAR que adentro trae un `.so` compilado con el NDK**. No son alternativas:
 el NDK es la herramienta con la que compilás, el AAR es lo que consumís desde
@@ -10,12 +10,11 @@ abajo hay C++.
 ## 1. Lo que viaja adentro
 
 ```
-piu-ocr.aar                                        ~9 MB
+piu-ocr.aar                                        ~22 MB
 ├── classes.jar                    API Kotlin + song_match
-├── jni/arm64-v8a/
-│   ├── libpiuocr.so               segment+recognize+text+badge  (NDK)
-│   ├── libncnn.so                 YOLO
-│   └── libopencv_java4.so         opencv-mobile, core+imgproc   ~2 MB
+├── jni/{arm64-v8a,armeabi-v7a,x86,x86_64}/
+│   └── libpiuocr.so               segment+recognize+text+badge + ncnn + opencv
+│                                  (todo linkeado estático en un solo .so por ABI)
 └── assets/piu_ocr/
     ├── chars.bin                  2346 plantillas int8         0.41 MB
     ├── digits.bin                 296 ejemplares int8          0.23 MB
@@ -26,8 +25,12 @@ piu-ocr.aar                                        ~9 MB
 
 `build_mobile.py` ya genera los tres primeros. Falta solo exportar el YOLO.
 
-**ABI `arm64-v8a` únicamente.** Agregar armeabi-v7a duplica el tamaño del `.so`
-por un parque de dispositivos que ya no importa.
+**Las cuatro ABIs** (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`). ncnn y
+opencv-mobile van estáticos dentro de `libpiuocr.so`, así que cada ABI pesa
+~4–14 MB y el AAR se triplica. No es opcional: el bundle de Play exige que todos
+los módulos compartan el set de ABIs y la app que consume este AAR ya trae las
+cuatro. Si algún día se recorta, hay que bajar el set **también** en la app base
+(arm64 + v7 alcanza para dispositivos reales; x86/x86_64 son solo emulador).
 
 ## 2. Lo que hay que portar, y lo que no
 

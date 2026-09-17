@@ -2,7 +2,7 @@
 
 Lectura de pantallas de resultado de **Pump It Up** en el teléfono, sin LLM.
 YOLO en NCNN + OCR clásico en C++ + matching contra el catálogo en Kotlin.
-Un AAR de 9.4 MB, `arm64-v8a`, sin dependencias en la app.
+Un AAR de ~22 MB con las cuatro ABIs (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), sin dependencias en la app. Las cuatro y no solo arm64: el bundle de Play exige que todos los módulos compartan el set de ABIs, y la app que lo consume ya trae esas cuatro.
 
 ```kotlin
 val ocr = PiuOcr.create(context)

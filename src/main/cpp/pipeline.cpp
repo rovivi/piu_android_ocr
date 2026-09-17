@@ -24,6 +24,15 @@ std::string esc(const std::string& s) {
   return o;
 }
 
+// Caja en píxeles de la imagen leída, recortada a ella. Las cajas viajan en
+// el JSON para DIBUJAR sobre la foto (la app anima dónde vio cada cosa);
+// ningún gate las lee.
+void putBox(std::ostringstream& js, const Box& b, int W, int H) {
+  auto cl = [](int v, int hi) { return std::max(0, std::min(v, hi)); };
+  js << "[" << cl(b.x1, W) << "," << cl(b.y1, H) << "," << cl(b.x2, W) << ","
+     << cl(b.y2, H) << "]";
+}
+
 }  // namespace
 
 const char* Engine::emptyJson() {
@@ -40,12 +49,57 @@ bool Engine::load(const std::string& base) {
          det_.load(base + "/piu_yolo.param", base + "/piu_yolo.bin");
 }
 
+namespace {
+// Por debajo de esta fracción del encuadre la pantalla está LEJOS: en el
+// lienzo de 1280 el título mide diez píxeles y el detector no lo ve.
+constexpr float ZOOM_MAX_SHARE = 0.40f;
+// Margen alrededor de la pantalla al recortarla: el título asoma del borde
+// en algunas fotos y una caja al ras lo partía.
+constexpr float ZOOM_PAD = 0.06f;
+constexpr int   ZOOM_MIN_SIDE = 64;
+}  // namespace
+
+// El zoom. En una foto lejana la pantalla es una franja del encuadre; el
+// detector la mira en un lienzo de 1280 y pierde el título (song_name es lo
+// más chico que busca). Si marcó la pantalla entera (fullscore, recall 1.0) y
+// ocupa poco de la foto, se vuelve a detectar SOLO dentro de ella: para la red
+// es la misma pantalla llenando el lienzo. Las cajas vuelven en coordenadas de
+// la foto completa y los recortes del OCR siguen saliendo de la imagen
+// original, así que el resto de la cadena no se entera.
+std::vector<Box> Engine::zoomIn(const cv::Mat& img, std::vector<Box> first) const {
+  const Box* panel = nullptr;
+  for (const Box& b : first)
+    if (b.cls == 1 && (!panel || b.conf > panel->conf)) panel = &b;
+  if (!panel) return first;
+  const int W = img.cols, H = img.rows;
+  const int pw = panel->x2 - panel->x1, ph = panel->y2 - panel->y1;
+  if (pw <= 0 || ph <= 0 || W <= 0 || H <= 0) return first;
+  if (float(pw) * float(ph) >= ZOOM_MAX_SHARE * float(W) * float(H)) return first;
+  const int x1 = std::max(0, panel->x1 - int(pw * ZOOM_PAD));
+  const int y1 = std::max(0, panel->y1 - int(ph * ZOOM_PAD));
+  const int x2 = std::min(W, panel->x2 + int(pw * ZOOM_PAD));
+  const int y2 = std::min(H, panel->y2 + int(ph * ZOOM_PAD));
+  if (x2 - x1 < ZOOM_MIN_SIDE || y2 - y1 < ZOOM_MIN_SIDE) return first;
+
+  cv::Mat crop = img(cv::Rect(x1, y1, x2 - x1, y2 - y1)).clone();
+  std::vector<Box> second = det_.detect(crop, 1280, augs);
+  for (Box& b : second) { b.x1 += x1; b.x2 += x1; b.y1 += y1; b.y2 += y1; }
+
+  // Lo que la segunda pasada vio manda; lo que no vio se conserva de la primera.
+  bool has[5] = {false, false, false, false, false};
+  for (const Box& b : second) if (b.cls >= 0 && b.cls < 5) has[b.cls] = true;
+  for (const Box& b : first)
+    if (b.cls >= 0 && b.cls < 5 && !has[b.cls]) second.push_back(b);
+  return second;
+}
+
 std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
                          std::vector<Box>* usedBoxes) const {
   // imgsz 1280 con TTA: es la única configuración que da cajas usables. Bajar a
   // 768 detecta MÁS cajas pero peor puestas, y el OCR consume el recorte —
   // medido, cuesta canción 0.800 -> 0.633.
-  const std::vector<Box> boxes = given ? *given : det_.detect(img, 1280, augs);
+  // PRIMER PASO: zoom. Ver zoomIn.
+  const std::vector<Box> boxes = given ? *given : zoomIn(img, det_.detect(img, 1280, augs));
   if (usedBoxes) *usedBoxes = boxes;
 
   std::ostringstream js;
@@ -74,7 +128,9 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
     std::string txt;
     for (int L : lab) txt += char(L);
     if (!first) js << ",";
-    js << "{\"raw\":\"" << esc(txt) << "\",\"conf\":" << b.conf << "}";
+    js << "{\"raw\":\"" << esc(txt) << "\",\"conf\":" << b.conf << ",\"box\":";
+    putBox(js, b, img.cols, img.rows);
+    js << "}";
     first = false;
   }
 
@@ -112,7 +168,28 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
     readScore(cropBox(img, *scoreBox, 0.06f), digits_, &scoreVal, &scoreMargin,
               &scoreDigits);
 
-  js << "],\"score\":" << scoreVal << ",\"score_margin\":" << scoreMargin
+  // rank: no se lee, pero es una de las cosas que la pantalla muestra y la
+  // app la señala al animar la lectura.
+  const Box* rankBox = nullptr;
+  for (const Box& b : boxes)
+    if (b.cls == 2 && (!rankBox || b.conf > rankBox->conf)) rankBox = &b;
+  // fullscore: la pantalla de resultado entera. Es adonde zoomIn acercó la
+  // detección y adonde la app acerca la foto antes de mostrar lo leído.
+  const Box* screenBox = nullptr;
+  for (const Box& b : boxes)
+    if (b.cls == 1 && (!screenBox || b.conf > screenBox->conf)) screenBox = &b;
+
+  js << "],\"w\":" << img.cols << ",\"h\":" << img.rows;
+  js << ",\"screen_box\":";
+  if (screenBox) putBox(js, *screenBox, img.cols, img.rows); else js << "null";
+  js << ",\"score_box\":";
+  if (scoreBox) putBox(js, *scoreBox, img.cols, img.rows); else js << "null";
+  js << ",\"badge_box\":";
+  if (diff) putBox(js, *diff, img.cols, img.rows); else js << "null";
+  js << ",\"rank_box\":";
+  if (rankBox) putBox(js, *rankBox, img.cols, img.rows); else js << "null";
+
+  js << ",\"score\":" << scoreVal << ",\"score_margin\":" << scoreMargin
      << ",\"score_digits\":\"" << esc(scoreDigits) << "\"";
   js << ",\"chart_type\":\"" << esc(chartType) << "\",\"chart_conf\":"
      << chartConf << ",\"level_digits\":[";

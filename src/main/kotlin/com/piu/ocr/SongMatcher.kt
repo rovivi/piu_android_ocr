@@ -173,7 +173,7 @@ class SongMatcher(catalogJson: String) {
          * La versión anterior usaba LCS y el gate de canción divergía de
          * Python en fotos al borde del margen.
          */
-        private fun similarity(a: String, b: String): Double {
+        internal fun similarity(a: String, b: String): Double {
             if (a.isEmpty() && b.isEmpty()) return 1.0
             val m = matchingBlocksSize(a, b)
             return 2.0 * m / (a.length + b.length)
