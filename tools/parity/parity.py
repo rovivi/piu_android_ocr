@@ -31,6 +31,7 @@ y falla (exit 1) si alguna cae más de --tol. --update-baseline las graba.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import math
 import os
@@ -54,10 +55,27 @@ CLS_NAME = {v: k for k, v in CLS.items()}
 
 # Mismos gates que PiuOcr.kt. Si cambian allá tienen que cambiar acá, y el
 # test JVM (ParityTest) es el que lo detecta.
-MIN_SONG_MARGIN = 0.015
+MIN_SONG_MARGIN = 0.010
 MIN_BADGE_CONF = 0.15
 MIN_SCORE_MARGIN = 0.010
-MAX_SONG_BOXES = 3
+MAX_SONG_BOXES = 5
+MIN_RAW_SIMILARITY = 0.55
+MIN_RAW_SIMILARITY_SHORT = 0.80
+SHORT_NAME = 3
+
+
+def looks_like(raws, name):
+    """difflib ratio sobre lo normalizado, sin espacios: el gate `looksLike` de
+    PiuOcr.kt. Un nombre de <= SHORT_NAME caracteres exige casi coincidencia."""
+    n = normalize(name).replace(" ", "")
+    if not n:
+        return False
+    need = MIN_RAW_SIMILARITY_SHORT if len(n) <= SHORT_NAME else MIN_RAW_SIMILARITY
+    for raw in raws:
+        r = normalize(raw).replace(" ", "")
+        if r and difflib.SequenceMatcher(None, r, n, autojunk=False).ratio() >= need:
+            return True
+    return False
 
 
 def _reexec_with_venv():
@@ -96,12 +114,13 @@ def build_cli():
     subprocess.check_call(["cmake", "--build", bd, "-j"])
 
 
-AUGS = None   # --augs: pasadas del TTA para el detector nativo
+AUGS = None          # --augs: pasadas del TTA para el detector nativo
+EXTRA_FLAGS = []     # flags opt-in (--rectify, --bin-mode, ...) para el CLI
 
 
 def run_native(image, boxes=None):
     """boxes: {clase: [{"box":[...], "conf":f}]} o None para usar el detector."""
-    cmd = [CLI, "--assets", ASSETS, image]
+    cmd = [CLI, "--assets", ASSETS, image] + EXTRA_FLAGS
     if AUGS and boxes is None:
         cmd += ["--augs", AUGS]
     if boxes is not None:
@@ -131,13 +150,25 @@ def interpret(native, catalog):
             continue
         raws.append(raw)
         w = math.sqrt(max(float(t.get("conf", 1.0)), 0.02))
-        for c in catalog.match(raw, chart_type=chart, topk=8):
-            sc = c["score"] * w
-            e = pooled.get(c["name"], 0.0)
-            pooled[c["name"]] = max(e, sc) + 0.15 * min(e, sc)
+        # F4.9: la 2ª lectura de la caja (raw2) entra al pool con peso menor y
+        # también a `raws` para que el gate looksLike lo vea.
+        raw2 = t.get("raw2") or None
+        if raw2 == raw:
+            raw2 = None
+        if raw2:
+            raws.append(raw2)
+        texts = [raw] + ([raw2] if raw2 else [])
+        for ti, text in enumerate(texts):
+            tw = w if ti == 0 else w * 0.85
+            for c in catalog.match(text, chart_type=chart, topk=8):
+                sc = c["score"] * tw
+                e = pooled.get(c["name"], 0.0)
+                pooled[c["name"]] = max(e, sc) + 0.15 * min(e, sc)
     ranked = sorted(pooled.items(), key=lambda kv: -kv[1])
     margin = ranked[0][1] - ranked[1][1] if len(ranked) > 1 else 1.0
-    song = ranked[0][0] if ranked and margin >= MIN_SONG_MARGIN else None
+    clear = bool(ranked) and margin >= MIN_SONG_MARGIN
+    alike = clear and looks_like(raws, ranked[0][0])
+    song = ranked[0][0] if alike else None
 
     level = None
     sc = native.get("level_scores") or []
@@ -215,6 +246,72 @@ def field_metrics(rows, side, field, gt_key, eq):
 def agreement(rows, field):
     same = sum(1 for r in rows if r["python"].get(field) == r["native"].get(field))
     return same / len(rows) if rows else 0.0
+
+
+# ── buckets por condición (F0.2) ─────────────────────────────────────────────
+
+def photo_buckets(img, rec):
+    """Etiquetas de condición de la foto. 'Mejoró en ángulo pero empeoró en
+    luz' se pierde si solo se mira el acierto global, así que se parte la
+    métrica por condición. Ver PLAN §3.2."""
+    tags = set()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    tags.add("dark" if float(gray.mean()) < 90 else "bright")
+
+    fs = None
+    for name, lst in (rec or {}).items():
+        if name != "fullscore":
+            continue
+        b = lst[0] if isinstance(lst, list) and lst else lst
+        if isinstance(b, dict):
+            fs = b.get("box")
+    if fs:
+        h, w = img.shape[:2]
+        x1, y1, x2, y2 = (int(v) for v in fs)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 > x1 and y2 > y1:
+            crop = img[y1:y2, x1:x2]
+            v = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2]
+            if float((v > 250).mean()) > 0.02:
+                tags.add("glare")
+            if ((x2 - x1) * (y2 - y1)) / float(w * h) < 0.4:
+                tags.add("far")
+            g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            _, th = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts:
+                c = max(cnts, key=cv2.contourArea)
+                area = crop.shape[0] * crop.shape[1]
+                if cv2.contourArea(c) > 0.2 * area:
+                    _, _, ang = cv2.minAreaRect(c)
+                    # distancia al eje más cercano: 0 = recto, crece al sesgar.
+                    ang = min(ang % 90.0, 90.0 - ang % 90.0)
+                    if ang > 8:
+                        tags.add("rotated")
+    return tags
+
+
+def print_buckets(rows, side, detect_rows):
+    """Tabla de acierto por campo dentro de cada bucket."""
+    eq_song = lambda v, g: normalize(v) == normalize(g)
+    eq = lambda v, g: v == g
+    eq_score = lambda v, g: v in g if isinstance(g, list) else v == g
+    fields = [("song", "song", eq_song), ("level", "level", eq),
+              ("chart_type", "chart_type", eq), ("score", "score", eq_score)]
+    all_tags = sorted({t for r in rows for t in r.get("buckets", set())})
+    for tag in all_tags:
+        sub = [r for r in rows if tag in r.get("buckets", set())]
+        rowset = sub
+        if side == "native_e2e" and detect_rows:
+            rown = {r["key"] for r in sub}
+            rowset = [r for r in detect_rows if r["key"] in rown]
+        s = " (native_e2e)" if side == "native_e2e" else ""
+        print(f"bucket {tag}{s}: n={len(rowset)}")
+        for f, gt_key, e in fields:
+            d = field_metrics(rowset, "native", f, gt_key, e)
+            print(f"  {f:12s} n={d['n']:3d}  cob {d['coverage']:.3f}  "
+                  f"prec {d['precision']:.3f}  acierto {d['accuracy']:.3f}")
 
 
 def summarize(rows, detect_rows):
@@ -369,6 +466,81 @@ def from_device(path, tol):
     return ok and not kt_diff
 
 
+# ── synth (F0.3) ─────────────────────────────────────────────────────────────
+
+SYNTH = os.path.join(ANDROID, "build", "synth")
+
+
+def run_synth(a):
+    """Corre el CLI sobre las pantallas sintéticas (tools/synth.py --build).
+    Valida dos cosas: (1) que con los flags puestos se lea el GT sintético bajo
+    cada condición, (2) que el modo default no cambie respecto de la primera
+    corrida (que representa 'antes del cambio')."""
+    gt_path = os.path.join(SYNTH, "gt.json")
+    if not os.path.exists(gt_path):
+        print(f"falta {gt_path}: correr python3 tools/synth.py --build")
+        return False
+    build_cli()
+    cases = json.load(open(gt_path))
+    catalog = Catalog(os.path.join(ASSETS, "catalog.json"))
+
+    def read(path, flags):
+        global EXTRA_FLAGS
+        saved = EXTRA_FLAGS
+        EXTRA_FLAGS = flags if flags is not None else []
+        try:
+            return interpret(run_native(path, None)["result"], catalog)
+        finally:
+            EXTRA_FLAGS = saved
+
+    # default (sin flags) contra la baseline grabada, si existe.
+    base_path = os.path.join(SYNTH, "default_baseline.json")
+    fresh = not os.path.exists(base_path)
+    defaults = {}
+    for c in cases:
+        path = os.path.join(SYNTH, c["file"])
+        if os.path.exists(path):
+            defaults[c["file"]] = read(path, [])
+    if not fresh:
+        base = json.load(open(base_path))
+        diff = [f for f in defaults if base.get(f) != defaults[f]]
+        print(f"default vs baseline synth: {len(diff)} diferencias de {len(defaults)}")
+        for f in diff[:10]:
+            print(f"  {f}: baseline={base.get(f)} ahora={defaults[f]}")
+        if diff:
+            return False
+    else:
+        json.dump(defaults, open(base_path, "w"), indent=1)
+        print(f"baseline synth grabada en {base_path}")
+
+    n = ok = 0
+    by_cond = {}
+    for c in cases:
+        path = os.path.join(SYNTH, c["file"])
+        if not os.path.exists(path):
+            continue
+        gt = c["gt"]
+        got = read(path, EXTRA_FLAGS)
+        n += 1
+        hits = (normalize(got["song"] or "") == normalize(gt["song"] or ""),
+                got["level"] == gt["level"], got["chart_type"] == gt["chart_type"],
+                got["score"] == gt["score"])
+        ok += all(hits)
+        cond = c.get("cond", {}).get("angle", "?")
+        d = by_cond.setdefault(cond, [0, 0])
+        d[0] += 1
+        d[1] += all(hits)
+        if not all(hits):
+            print(f"  {c['file']}: got song={got['song']!r} lvl={got['level']} "
+                  f"ct={got['chart_type']!r} score={got['score']}  gt={gt}")
+    print(f"synth: {ok}/{n} completos")
+    for cond, (tot, good) in sorted(by_cond.items(), key=lambda kv: str(kv[0])):
+        print(f"  ángulo {cond}: {good}/{tot}")
+    # La primera corrida solo graba la baseline (representa "antes del cambio");
+    # exigir además que el default lea el GT sintético bloquearía el arranque.
+    return n > 0 and (ok == n or fresh)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -386,11 +558,36 @@ def main():
     ap.add_argument("--augs", help='pasadas TTA del detector, ej. "1,0.83,1f" (default del .so)')
     ap.add_argument("--from-device", metavar="RESULTS_JSON",
                     help="comparar results.json bajado del teléfono (tools/parity/device.sh)")
+    # Flags opt-in (F0.1): se reenvían al CLI. A/B por flag.
+    ap.add_argument("--rectify", action="store_true", help="F1: enderezar la pantalla")
+    ap.add_argument("--bin-mode", choices=["legacy", "clahe", "adaptive", "all"],
+                    help="F2: binarización del OCR")
+    ap.add_argument("--badge-mode", choices=["color", "adaptive", "fusion"],
+                    help="F3: voto del chart_type")
+    ap.add_argument("--title-variants", type=int, choices=[1, 2],
+                    help="F4: 2 emite raw2 por caja")
+    ap.add_argument("--title-boxes", type=int, help="F4: máximo de cajas de título")
+    ap.add_argument("--buckets", action="store_true",
+                    help="F0.2: acierto por campo dentro de cada condición")
+    ap.add_argument("--synth", action="store_true",
+                    help="F0.3: valida sobre pantallas sintéticas (tools/synth.py)")
     a = ap.parse_args()
-    global AUGS
+    global AUGS, EXTRA_FLAGS
     AUGS = a.augs
+    if a.rectify:
+        EXTRA_FLAGS.append("--rectify")
+    if a.bin_mode:
+        EXTRA_FLAGS += ["--bin-mode", a.bin_mode]
+    if a.badge_mode:
+        EXTRA_FLAGS += ["--badge-mode", a.badge_mode]
+    if a.title_variants:
+        EXTRA_FLAGS += ["--title-variants", str(a.title_variants)]
+    if a.title_boxes:
+        EXTRA_FLAGS += ["--title-boxes", str(a.title_boxes)]
     if a.from_device:
         sys.exit(0 if from_device(a.from_device, a.tol) else 1)
+    if a.synth:
+        sys.exit(0 if run_synth(a) else 1)
 
     build_cli()
     boxes = {b["key"]: b for b in json.load(open(os.path.join(D2, "boxes.json")))}
@@ -414,9 +611,12 @@ def main():
         ct, lvl = (gt_lvl.get(key) or [None, None])
         gt = {"song": gt_song[key], "chart_type": ct, "level": lvl,
               "score": gt_score.get(key)}
+        buckets = photo_buckets(img, rec["boxes"])
+        if isinstance(gt["score"], list):
+            buckets.add("twoP")
 
         nat = run_native(path, rec["boxes"])
-        row = {"key": key, "file": rec["file"], "gt": gt,
+        row = {"key": key, "file": rec["file"], "gt": gt, "buckets": sorted(buckets),
                "python": run_python(reader, img, rec["boxes"]),
                "native": interpret(nat["result"], catalog),
                "native_json": nat["result"]}
@@ -424,7 +624,7 @@ def main():
 
         if a.detect:
             det = run_native(path, None)
-            detect_rows.append({"key": key, "gt": gt,
+            detect_rows.append({"key": key, "gt": gt, "buckets": sorted(buckets),
                                 "native": interpret(det["result"], catalog),
                                 "native_json": det["result"],
                                 "det_boxes": det["boxes"], "ref_boxes": rec["boxes"],
@@ -434,6 +634,13 @@ def main():
 
     m = summarize(rows, detect_rows)
     print_table(m)
+
+    if a.buckets:
+        print("\nF0.2 buckets (nativo con cajas de boxes.json):")
+        print_buckets(rows, "native", detect_rows)
+        if detect_rows:
+            print("\nF0.2 buckets (nativo end-to-end):")
+            print_buckets(rows, "native_e2e", detect_rows)
 
     if a.diff:
         print("\nfotos donde nativo != python:")

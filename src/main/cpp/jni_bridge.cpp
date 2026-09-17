@@ -75,6 +75,24 @@ Java_com_piu_ocr_PiuOcr_nativeDestroy(JNIEnv*, jclass, jlong h) {
   delete reinterpret_cast<Engine*>(h);
 }
 
+// Opt-in en runtime (F0.1). Los enteros siguen el orden de los enum de
+// piu_ocr.h: BinMode Legacy=0/Clahe=1/Adaptive=2/All=3,
+// BadgeMode Color=0/Adaptive=1/Fusion=2. Defaults == comportamiento actual.
+JNIEXPORT void JNICALL
+Java_com_piu_ocr_PiuOcr_nativeSetOptions(JNIEnv*, jclass, jlong h, jboolean rectify,
+                                         jint binMode, jint badgeMode,
+                                         jint titleVariants, jint titleBoxes) {
+  auto* c = reinterpret_cast<Engine*>(h);
+  if (!c) return;
+  c->opts.rectify = rectify;
+  if (binMode >= 0 && binMode <= int(BinMode::All))
+    c->opts.binMode = static_cast<BinMode>(binMode);
+  if (badgeMode >= 0 && badgeMode <= int(BadgeMode::Fusion))
+    c->opts.badgeMode = static_cast<BadgeMode>(badgeMode);
+  c->opts.maxTitleVariants = titleVariants < 1 ? 1 : titleVariants;
+  c->opts.maxTitleBoxes = titleBoxes < 1 ? 3 : titleBoxes;
+}
+
 /**
  * Corre el detector y el OCR sobre el bitmap y devuelve JSON. Los gates y el
  * matching contra el catálogo viven en Kotlin: son lógica de producto que

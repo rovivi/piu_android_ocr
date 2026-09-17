@@ -81,6 +81,22 @@ class PiuOcr private constructor(
         return nativeRead(handle, bmp)
     }
 
+    /**
+     * Activa mecanismos opt-in (default == comportamiento actual, ver
+     * docs/PLAN_LUZ_ANGULO.md): rectify (F1), binMode (F2), badgeMode (F3),
+     * titleVariants (F4). Los modos numéricos siguen el orden del enum de C++.
+     */
+    fun setOptions(
+        rectify: Boolean = false,
+        binMode: Int = BIN_LEGACY,
+        badgeMode: Int = BADGE_COLOR,
+        titleVariants: Int = 1,
+        titleBoxes: Int = DEFAULT_TITLE_BOXES,
+    ) {
+        check(handle != 0L) { "PiuOcr ya está cerrado" }
+        nativeSetOptions(handle, rectify, binMode, badgeMode, titleVariants, titleBoxes)
+    }
+
     /** Idempotente: un segundo close() era un double free en el .so. */
     @Synchronized
     override fun close() {
@@ -125,9 +141,19 @@ class PiuOcr private constructor(
             // Ponderar por la confianza de la caja: una caja de 0.005 puede ser
             // la respuesta cuando es la única, sin ganarle a una de 0.5.
             val w = sqrt(maxOf(t.optDouble("conf", 1.0), 0.02))
-            for (c in matcher.match(raw, chart.value, topK = 8)) {
-                val e = pooled[c.name] ?: 0.0
-                pooled[c.name] = maxOf(e, c.score * w) + 0.15 * minOf(e, c.score * w)
+            // F4.9: la 2ª mejor lectura de la misma caja (raw2) entra al pool con
+            // peso algo menor; solo existe si el C++ corrió con --title-variants 2.
+            // Va también a `raws` para que el gate `looksLike` lo vea: si el
+            // ganador salió de raw2, rechazarlo por "sin_parecido" era un falso null.
+            val raw2 = t.optString("raw2").takeIf { it.isNotEmpty() && it != raw }
+            if (raw2 != null) raws += raw2
+            val texts = if (raw2 != null) listOf(raw, raw2) else listOf(raw)
+            for ((ti, text) in texts.withIndex()) {
+                val tw = if (ti == 0) w else w * 0.85
+                for (c in matcher.match(text, chart.value, topK = 8)) {
+                    val e = pooled[c.name] ?: 0.0
+                    pooled[c.name] = maxOf(e, c.score * tw) + 0.15 * minOf(e, c.score * tw)
+                }
             }
         }
         val ranked = pooled.entries.sortedByDescending { it.value }
@@ -268,7 +294,12 @@ class PiuOcr private constructor(
         // 0.35 no compraba precisión, solo la tiraba: sobre 55 bolitas 0.15 da
         // 0.873 y 0.35 da 0.655, porque convierte lecturas buenas en null.
         const val MIN_BADGE_CONF = 0.15f
-        const val MAX_SONG_BOXES = 3
+        // F4.9: 3 -> 5 cajas de título. El C++ por default emite 3 (Options
+        // maxTitleBoxes), así que el fixture y el resultado no cambian hasta
+        // que se corra con el flag; este tope solo deja de recortar de más.
+        const val MAX_SONG_BOXES = 5
+        /** Cajas que emite el C++ sin setOptions: el default no se toca. */
+        const val DEFAULT_TITLE_BOXES = 3
         /** Candidatos que viajan en [Reading.candidates]: los que empatan y uno más de contexto. */
         const val MAX_CANDIDATES = 3
 
@@ -322,8 +353,20 @@ class PiuOcr private constructor(
             return "$code:${pi.lastUpdateTime}"
         }
 
+        // Modos opt-in (F0.1). Ver Options en src/main/cpp/piu_ocr.h.
+        const val BIN_LEGACY = 0
+        const val BIN_CLAHE = 1
+        const val BIN_ADAPTIVE = 2
+        const val BIN_ALL = 3
+        const val BADGE_COLOR = 0
+        const val BADGE_ADAPTIVE = 1
+        const val BADGE_FUSION = 2
+
         @JvmStatic private external fun nativeCreate(assetDir: String): Long
         @JvmStatic private external fun nativeDestroy(handle: Long)
         @JvmStatic private external fun nativeRead(handle: Long, bitmap: Bitmap): String
+        @JvmStatic private external fun nativeSetOptions(
+            handle: Long, rectify: Boolean, binMode: Int, badgeMode: Int,
+            titleVariants: Int, titleBoxes: Int)
     }
 }

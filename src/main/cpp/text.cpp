@@ -97,13 +97,77 @@ cv::Mat focusBand(const cv::Mat& roi) {
 // OJO: MORPH_RECT sería separable y ~14 ms más barato, pero es medible peor
 // (0.733 vs 0.800): las esquinas del rectángulo llegan más lejos en diagonal y
 // la banda cruza el recorte en diagonal, así que come trazo además de fondo.
-static void variants(const cv::Mat& gray, std::vector<cv::Mat>* out) {
+//
+// F2: CLAHE y adaptiveThreshold atacan luz irregular/glare. En Legacy NO se
+// agregan: el default tiene que dar byte-a-byte lo mismo que antes. En All se
+// corren todos y el mismo puntaje de coherencia elige; Legacy va primero para
+// que en empate gane el camino viejo.
+static void variants(const cv::Mat& gray, BinMode mode, std::vector<cv::Mat>* out) {
   out->push_back(gray);
   const int k = std::max(3, (pyRound(0.55 * gray.rows) | 1));
   cv::Mat th;
   cv::morphologyEx(gray, th, cv::MORPH_TOPHAT,
                    cv::getStructuringElement(cv::MORPH_ELLIPSE, {k, k}));
   out->push_back(th);
+  if (mode == BinMode::Legacy) return;
+  if (mode == BinMode::Clahe || mode == BinMode::All) {
+    // equalizeHist local: realza el contraste por bloques sin mover el
+    // histograma global, que es lo que rompe el percentil en luz despareja.
+    cv::Mat eq;
+    cv::Ptr<cv::CLAHE> cl = cv::createCLAHE(2.0, {8, 8});
+    cl->apply(gray, eq);
+    out->push_back(eq);
+  }
+  if (mode == BinMode::Adaptive || mode == BinMode::All) {
+    cv::Mat ad;
+    const int bs = std::max(11, (gray.rows / 8) | 1);
+    cv::adaptiveThreshold(gray, ad, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                          cv::THRESH_BINARY, bs, 8);
+    out->push_back(ad);
+  }
+}
+
+// F1.3.5: deskew fino del título. La pendiente dominante de la banda se estima
+// con Hough sobre los bordes; si está dentro de ±maxDeg se corrige con
+// warpAffine. Identidad si no hay líneas claras o si la pendiente es despreciable.
+cv::Mat deskewBand(const cv::Mat& roi, float maxDeg) {
+  if (roi.empty() || roi.rows < 12 || roi.cols < 12) return roi;
+  cv::Mat gray;
+  if (roi.channels() == 3) cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY); else gray = roi;
+  cv::Mat edges;
+  cv::Canny(gray, edges, 50, 150);
+  std::vector<cv::Vec4i> lines;
+  cv::HoughLinesP(edges, lines, 1.0, CV_PI / 180.0,
+                  std::max(10, gray.cols / 8), gray.cols / 4.0, 8);
+  std::vector<std::pair<float, float>> ang;  // (ángulo en grados, peso=largo)
+  for (const cv::Vec4i& l : lines) {
+    const float dx = float(l[2] - l[0]), dy = float(l[3] - l[1]);
+    const float len = std::hypot(dx, dy);
+    float a = float(std::atan2(dy, dx) * 180.0 / CV_PI);
+    while (a >= 90.f) a -= 180.f;
+    while (a < -90.f) a += 180.f;
+    if (std::abs(a) <= maxDeg) ang.emplace_back(a, len);
+  }
+  if (ang.empty()) return roi;
+  std::sort(ang.begin(), ang.end(),
+            [](const std::pair<float, float>& a, const std::pair<float, float>& b) {
+              return a.first < b.first;
+            });
+  float total = 0.f;
+  for (const auto& p : ang) total += p.second;
+  float acc = 0.f, med = 0.f;
+  for (const auto& p : ang) {
+    acc += p.second;
+    if (acc >= 0.5f * total) { med = p.first; break; }
+  }
+  if (std::abs(med) < 0.3f) return roi;
+  const cv::Point2f c(roi.cols / 2.f, roi.rows / 2.f);
+  // getRotationMatrix2D con ángulo positivo gira en sentido antihorario: una
+  // línea que baja a la derecha (ángulo +a) vuelve a horizontal con +a.
+  const cv::Mat M = cv::getRotationMatrix2D(c, med, 1.0);
+  cv::Mat out;
+  cv::warpAffine(roi, out, M, roi.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+  return out;
 }
 
 // Percentil sobre un histograma de 256 bins: O(n) una sola vez por fuente en
@@ -144,27 +208,26 @@ static Glyph normInLine(const cv::Mat& bin, const cv::Rect& r, int y0, int lineH
   return gl;
 }
 
-std::vector<Glyph> segmentChars(const cv::Mat& roi, int wantN) {
-  if (roi.empty()) return {};
-  cv::Mat gray;
-  if (roi.channels() == 3) cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY); else gray = roi;
+namespace {
+// Una lectura completa de la caja: el conjunto de glifos y su puntaje. Se
+// materializan los glifos al vuelo (son chicos) para no guardar una imagen
+// umbralizada por candidato.
+struct Reading {
+  float scoreA = -1e9f, scoreB = -1e9f;
+  std::vector<Glyph> glyphs;
+};
 
-  // Normalizar la altura de trabajo en vez de escalar a ciegas. Un recorte de
-  // una foto de 2048 px daba una imagen de 4500x900 umbralizada 12 veces: una
-  // sola tardó 106 SEGUNDOS. Además sube la precisión, porque el kernel del
-  // top-hat y los umbrales de ruido pasan a significar lo mismo en una foto y
-  // en un frame de video.
-  float f = float(TARGET_H) / std::max(gray.rows, 1);
-  f = std::min(std::max(f, MIN_SCALE), 3.f);
-  if (std::abs(f - 1.f) > 0.02f)
-    cv::resize(gray, gray, cv::Size(), f, f, f > 1 ? cv::INTER_CUBIC : cv::INTER_AREA);
+bool sameReading(const std::vector<Glyph>& a, const std::vector<Glyph>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (std::memcmp(a[i].px, b[i].px, sizeof(a[i].px))) return false;
+  return true;
+}
 
+void collectReadings(const cv::Mat& gray, BinMode mode, int wantN,
+                     std::vector<Reading>* out) {
   std::vector<cv::Mat> srcs;
-  variants(gray, &srcs);
-
-  std::vector<cv::Rect> best;
-  cv::Mat bestBin;
-  float bestScoreA = -1e9f, bestScoreB = -1e9f;
+  variants(gray, mode, &srcs);
   for (const cv::Mat& src : srcs) {
     int hist[256];
     histogram(src, hist);
@@ -196,20 +259,58 @@ std::vector<Glyph> segmentChars(const cv::Mat& roi, int wantN) {
       const float coh = -std::sqrt(var / cand.size()) / std::max(mean, 1e-6f);
       const float a = (wantN > 0) ? -std::abs(int(cand.size()) - wantN)
                                   : float(cand.size());
-      if (a > bestScoreA || (a == bestScoreA && coh > bestScoreB)) {
-        bestScoreA = a; bestScoreB = coh; best = cand; bestBin = bin;
-      }
+      int y0 = INT32_MAX, y1 = 0;
+      for (const auto& r : cand) { y0 = std::min(y0, r.y); y1 = std::max(y1, r.y + r.height); }
+      const int lineH = std::max(1, y1 - y0);
+      Reading rd;
+      rd.scoreA = a; rd.scoreB = coh;
+      rd.glyphs.reserve(cand.size());
+      for (const auto& r : cand) rd.glyphs.push_back(normInLine(bin, r, y0, lineH));
+      out->push_back(std::move(rd));
     }
   }
-  if (best.empty()) return {};
+  std::stable_sort(out->begin(), out->end(),
+                   [](const Reading& a, const Reading& b) {
+                     return a.scoreA != b.scoreA ? a.scoreA > b.scoreA
+                                                 : a.scoreB > b.scoreB;
+                   });
+}
+}  // namespace
 
-  int y0 = INT32_MAX, y1 = 0;
-  for (const auto& r : best) { y0 = std::min(y0, r.y); y1 = std::max(y1, r.y + r.height); }
-  const int lineH = std::max(1, y1 - y0);
-  std::vector<Glyph> out;
-  out.reserve(best.size());
-  for (const auto& r : best) out.push_back(normInLine(bestBin, r, y0, lineH));
+std::vector<std::vector<Glyph>> segmentCharsVariants(const cv::Mat& roi, int wantN,
+                                                     BinMode mode) {
+  std::vector<std::vector<Glyph>> out;
+  if (roi.empty()) return out;
+  cv::Mat gray;
+  if (roi.channels() == 3) cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY); else gray = roi;
+
+  // Normalizar la altura de trabajo en vez de escalar a ciegas. Un recorte de
+  // una foto de 2048 px daba una imagen de 4500x900 umbralizada 12 veces: una
+  // sola tardó 106 SEGUNDOS. Además sube la precisión, porque el kernel del
+  // top-hat y los umbrales de ruido pasan a significar lo mismo en una foto y
+  // en un frame de video.
+  float f = float(TARGET_H) / std::max(gray.rows, 1);
+  f = std::min(std::max(f, MIN_SCALE), 3.f);
+  if (std::abs(f - 1.f) > 0.02f)
+    cv::resize(gray, gray, cv::Size(), f, f, f > 1 ? cv::INTER_CUBIC : cv::INTER_AREA);
+
+  std::vector<Reading> reads;
+  collectReadings(gray, mode, wantN, &reads);
+  for (const Reading& r : reads) {
+    if (r.glyphs.empty()) continue;
+    bool dup = false;
+    for (const auto& g : out)
+      if (sameReading(g, r.glyphs)) { dup = true; break; }
+    if (dup) continue;
+    out.push_back(r.glyphs);
+    if (out.size() >= 2) break;   // solo interesan la mejor y la 2ª
+  }
   return out;
+}
+
+std::vector<Glyph> segmentChars(const cv::Mat& roi, int wantN, BinMode mode) {
+  auto v = segmentCharsVariants(roi, wantN, mode);
+  return v.empty() ? std::vector<Glyph>{} : v.front();
 }
 
 }  // namespace piu

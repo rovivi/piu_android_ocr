@@ -23,7 +23,8 @@ set_target_properties(ncnn PROPERTIES INTERFACE_COMPILE_OPTIONS "")
 
 add_executable(piuocr_cli cli.cpp
     ${SRC}/pipeline.cpp ${SRC}/detector.cpp ${SRC}/segment.cpp
-    ${SRC}/text.cpp ${SRC}/badge.cpp ${SRC}/recognize.cpp ${SRC}/score.cpp)
+    ${SRC}/text.cpp ${SRC}/badge.cpp ${SRC}/recognize.cpp ${SRC}/score.cpp
+    ${SRC}/rectify.cpp)
 target_include_directories(piuocr_cli PRIVATE ${SRC})
 target_link_libraries(piuocr_cli ${OpenCV_LIBS} ncnn)
 # Mismas flags que el .so: el punto es medir el mismo código.

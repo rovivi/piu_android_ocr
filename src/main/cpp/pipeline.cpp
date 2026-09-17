@@ -93,14 +93,78 @@ std::vector<Box> Engine::zoomIn(const cv::Mat& img, std::vector<Box> first) cons
   return second;
 }
 
+// F4.10: tras el rectify, un título que quedó por debajo de ~24 px en la
+// pantalla enderezada ya llega degradado: segmentChars normaliza a TARGET_H,
+// pero la interpolación no inventa trazo. Se hace una detección local alrededor
+// de esa caja (el título pasa a medir cientos de px para la red) y se reemplaza
+// si la nueva caja es más alta. Opt-in: solo se llama en el camino rectify.
+std::vector<Box> Engine::zoomTinyTitles(const cv::Mat& work,
+                                        std::vector<Box> boxes) const {
+  constexpr int MIN_TITLE_PX = 24;
+  const int W = work.cols, H = work.rows;
+  for (Box& b : boxes) {
+    if (b.cls != 4) continue;
+    const int bw = b.x2 - b.x1, bh = b.y2 - b.y1;
+    if (bh >= MIN_TITLE_PX || bw < 8 || bh < 4) continue;
+    const int x1 = std::max(0, b.x1 - int(bw * 0.6f));
+    const int y1 = std::max(0, b.y1 - int(bh * 1.0f));
+    const int x2 = std::min(W, b.x2 + int(bw * 0.6f));
+    const int y2 = std::min(H, b.y2 + int(bh * 1.0f));
+    if (x2 - x1 < 20 || y2 - y1 < 12) continue;
+    cv::Mat crop = work(cv::Rect(x1, y1, x2 - x1, y2 - y1)).clone();
+    std::vector<Box> sec = det_.detect(crop, 1280, augs);
+    const Box* best = nullptr;
+    for (const Box& s : sec)
+      if (s.cls == 4 && (!best || s.conf > best->conf)) best = &s;
+    if (!best) continue;
+    Box nb = *best;
+    nb.x1 += x1; nb.x2 += x1; nb.y1 += y1; nb.y2 += y1;
+    if (nb.y2 - nb.y1 > bh) b = nb;
+  }
+  return boxes;
+}
+
 std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
                          std::vector<Box>* usedBoxes) const {
   // imgsz 1280 con TTA: es la única configuración que da cajas usables. Bajar a
   // 768 detecta MÁS cajas pero peor puestas, y el OCR consume el recorte —
   // medido, cuesta canción 0.800 -> 0.633.
-  // PRIMER PASO: zoom. Ver zoomIn.
-  const std::vector<Box> boxes = given ? *given : zoomIn(img, det_.detect(img, 1280, augs));
-  if (usedBoxes) *usedBoxes = boxes;
+  //
+  // PRIMER PASO: zoom (lejana) o rectify (diagonal). Con --rectify se endereza
+  // la pantalla y TODA la lectura corre sobre el warp (la red ve la pantalla
+  // axis-aligned, como en entrenamiento); las cajas se mapean de vuelta a la
+  // foto solo para el JSON. Si el cuadrilátero no es plausible, cae a zoomIn.
+  cv::Mat work = img;
+  cv::Mat Hinv;              // warp -> foto; vacío = identidad
+  std::vector<Box> boxes;
+  if (given) {
+    boxes = *given;
+  } else {
+    const std::vector<Box> first = det_.detect(img, 1280, augs);
+    bool rectified = false;
+    if (opts.rectify) {
+      const Box* screen = nullptr;
+      for (const Box& b : first)
+        if (b.cls == 1 && (!screen || b.conf > screen->conf)) screen = &b;
+      if (screen) {
+        Rectify r = rectifyScreen(img, *screen);
+        if (r.ok) { work = r.warp; Hinv = r.Hinv; rectified = true; }
+      }
+    }
+    if (rectified) {
+      boxes = det_.detect(work, 1280, augs);
+      boxes = zoomTinyTitles(work, boxes);
+    } else {
+      boxes = zoomIn(img, first);
+    }
+  }
+  auto mb = [&](const Box& b) { return mapBoxBack(Hinv, b); };
+  if (usedBoxes) {
+    std::vector<Box> mapped;
+    mapped.reserve(boxes.size());
+    for (const Box& b : boxes) mapped.push_back(mb(b));
+    *usedBoxes = mapped;
+  }
 
   std::ostringstream js;
   js.imbue(std::locale::classic());     // "0.5", nunca "0,5"
@@ -110,26 +174,39 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   std::vector<int> lvlDigits;
   std::vector<std::vector<float>> lvlScores;
 
-  // song_name: hasta 3 cajas, de mayor a menor confianza.
+  // song_name: hasta `maxTitleBoxes` cajas, de mayor a menor confianza.
   std::vector<Box> titles;
   for (const Box& b : boxes) if (b.cls == 4) titles.push_back(b);
   std::stable_sort(titles.begin(), titles.end(),
                    [](const Box& a, const Box& b) { return a.conf > b.conf; });
-  if (titles.size() > 3) titles.resize(3);
+  if (int(titles.size()) > opts.maxTitleBoxes) titles.resize(opts.maxTitleBoxes);
   bool first = true;
   for (const Box& b : titles) {
-    cv::Mat roi = cropBox(img, b, 0.04f);
+    cv::Mat roi = cropBox(work, b, 0.04f);
     if (roi.empty()) continue;
     roi = focusBand(roi);
-    auto gs = segmentChars(roi);
-    if (gs.empty()) continue;
-    std::vector<int> lab; std::vector<float> mar;
-    chars_.predict(gs, &lab, &mar);
-    std::string txt;
-    for (int L : lab) txt += char(L);
+    if (opts.rectify) roi = deskewBand(roi);   // F1.3.5
+    auto variants = segmentCharsVariants(roi, 0, opts.binMode);
+    if (variants.empty()) continue;
+    auto readGlyphs = [&](const std::vector<Glyph>& gs) {
+      std::vector<int> lab; std::vector<float> mar;
+      chars_.predict(gs, &lab, &mar);
+      std::string t;
+      for (int L : lab) t += char(L);
+      return t;
+    };
+    const std::string txt = readGlyphs(variants[0]);
+    // F4.9: segunda mejor lectura de la misma caja; Kotlin la suma al pool.
+    std::string txt2;
+    if (opts.maxTitleVariants >= 2 && variants.size() >= 2) {
+      txt2 = readGlyphs(variants[1]);
+      if (txt2 == txt) txt2.clear();   // no ensuciar el pool con la misma lectura
+    }
     if (!first) js << ",";
-    js << "{\"raw\":\"" << esc(txt) << "\",\"conf\":" << b.conf << ",\"box\":";
-    putBox(js, b, img.cols, img.rows);
+    js << "{\"raw\":\"" << esc(txt) << "\"";
+    if (!txt2.empty()) js << ",\"raw2\":\"" << esc(txt2) << "\"";
+    js << ",\"conf\":" << b.conf << ",\"box\":";
+    putBox(js, mb(b), img.cols, img.rows);
     js << "}";
     first = false;
   }
@@ -144,10 +221,11 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   if (diff) {
     // pad +0.02: medido sobre 55 bolitas, -0.02 da 0.855 y +0.02 da 0.873.
     std::string t; float cf = 0.f;
-    if (classifyChartType(cropBox(img, *diff, 0.02f), &t, &cf)) {
+    if (classifyChartType(cropBox(work, *diff, 0.02f), &t, &cf, opts.badgeMode,
+                          &chars_)) {
       chartType = t; chartConf = cf;
     }
-    auto gs = segmentBadge(cropBox(img, *diff, -0.02f), 2);
+    auto gs = segmentBadge(cropBox(work, *diff, -0.02f), 2);
     if (!gs.empty()) {
       std::vector<float> mar;
       level_.predict(gs, &lvlDigits, &mar);
@@ -165,8 +243,8 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   float scoreMargin = 0.f;
   std::string scoreDigits;
   if (scoreBox)
-    readScore(cropBox(img, *scoreBox, 0.06f), digits_, &scoreVal, &scoreMargin,
-              &scoreDigits);
+    readScore(cropBox(work, *scoreBox, 0.06f), digits_, &scoreVal, &scoreMargin,
+              &scoreDigits, opts.binMode);
 
   // rank: no se lee, pero es una de las cosas que la pantalla muestra y la
   // app la señala al animar la lectura.
@@ -181,13 +259,13 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
 
   js << "],\"w\":" << img.cols << ",\"h\":" << img.rows;
   js << ",\"screen_box\":";
-  if (screenBox) putBox(js, *screenBox, img.cols, img.rows); else js << "null";
+  if (screenBox) putBox(js, mb(*screenBox), img.cols, img.rows); else js << "null";
   js << ",\"score_box\":";
-  if (scoreBox) putBox(js, *scoreBox, img.cols, img.rows); else js << "null";
+  if (scoreBox) putBox(js, mb(*scoreBox), img.cols, img.rows); else js << "null";
   js << ",\"badge_box\":";
-  if (diff) putBox(js, *diff, img.cols, img.rows); else js << "null";
+  if (diff) putBox(js, mb(*diff), img.cols, img.rows); else js << "null";
   js << ",\"rank_box\":";
-  if (rankBox) putBox(js, *rankBox, img.cols, img.rows); else js << "null";
+  if (rankBox) putBox(js, mb(*rankBox), img.cols, img.rows); else js << "null";
 
   js << ",\"score\":" << scoreVal << ",\"score_margin\":" << scoreMargin
      << ",\"score_digits\":\"" << esc(scoreDigits) << "\"";

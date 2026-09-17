@@ -5,9 +5,14 @@
 // --augs: pasadas del TTA, "escala" o "escalaf" (flip), separadas por coma.
 // Sin --box corre el detector YOLO (con TTA, como el teléfono). Con --box usa
 // esas cajas y saltea el detector, para aislar el OCR de la detección.
-// Salida: {"result": <mismo JSON que nativeRead>, "boxes": [...], "ms": {...}}
+//
+// Flags opt-in (F0.1): --rectify (F1), --bin-mode legacy|clahe|adaptive|all
+// (F2), --badge-mode color|adaptive|fusion (F3), --title-variants N (F4).
+// Defaults == comportamiento actual. Salida: {"result": ..., "boxes": [...],
+// "ms": {...}}
 #include "piu_ocr.h"
 #include <opencv2/highgui.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -27,9 +32,26 @@ int main(int argc, char** argv) {
   std::vector<Box> given;
   bool useGiven = false;
   std::vector<Aug> augs;
+  Options opts;
   for (int i = 1; i < argc; ++i) {
     if (!std::strcmp(argv[i], "--assets") && i + 1 < argc) assets = argv[++i];
-    else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
+    else if (!std::strcmp(argv[i], "--rectify")) opts.rectify = true;
+    else if (!std::strcmp(argv[i], "--bin-mode") && i + 1 < argc) {
+      const std::string m = argv[++i];
+      if (m == "clahe") opts.binMode = BinMode::Clahe;
+      else if (m == "adaptive") opts.binMode = BinMode::Adaptive;
+      else if (m == "all") opts.binMode = BinMode::All;
+      else opts.binMode = BinMode::Legacy;
+    } else if (!std::strcmp(argv[i], "--badge-mode") && i + 1 < argc) {
+      const std::string m = argv[++i];
+      if (m == "adaptive") opts.badgeMode = BadgeMode::Adaptive;
+      else if (m == "fusion") opts.badgeMode = BadgeMode::Fusion;
+      else opts.badgeMode = BadgeMode::Color;
+    } else if (!std::strcmp(argv[i], "--title-variants") && i + 1 < argc) {
+      opts.maxTitleVariants = std::max(1, std::atoi(argv[++i]));
+    } else if (!std::strcmp(argv[i], "--title-boxes") && i + 1 < argc) {
+      opts.maxTitleBoxes = std::max(1, std::atoi(argv[++i]));
+    } else if (!std::strcmp(argv[i], "--box") && i + 1 < argc) {
       Box b{};
       if (std::sscanf(argv[++i], "%d,%d,%d,%d,%d,%f", &b.cls, &b.x1, &b.y1,
                       &b.x2, &b.y2, &b.conf) != 6) {
@@ -65,6 +87,7 @@ int main(int argc, char** argv) {
   }
   const double loadMs = ms(t0);
   if (!augs.empty()) eng.augs = augs;
+  eng.opts = opts;
 
   cv::Mat img = cv::imread(image, cv::IMREAD_COLOR);
   if (img.empty()) {

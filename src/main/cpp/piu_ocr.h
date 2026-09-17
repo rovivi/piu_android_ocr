@@ -25,6 +25,23 @@ constexpr int   BADGE_S_MAX = 90, BADGE_V_MIN = 150, BADGE_SCALE = 6;
 
 struct Box { int x1, y1, x2, y2; float conf; int cls = -1; };
 
+// Modos de binarización del OCR clásico (F2). Legacy es EXACTAMENTE el camino
+// de siempre; Clahe/Adaptive agregan candidatos y All corre todos y elige el
+// mejor por el mismo puntaje de coherencia. Default Legacy ⇒ el resultado no
+// cambia mientras no se valide un ganador en la máquina con datos.
+enum class BinMode { Legacy, Clahe, Adaptive, All };
+// Color: umbrales fijos S>80 V>60 (F3.7 legacy). Adaptive: cortes estimados del
+// propio disco. Fusion: voto color ⊕ texto del sub-label (necesita Templates).
+enum class BadgeMode { Color, Adaptive, Fusion };
+
+struct Options {
+  bool rectify = false;                    // deskew por perspectiva (F1)
+  BinMode binMode = BinMode::Legacy;       // F2
+  BadgeMode badgeMode = BadgeMode::Color;  // F3
+  int maxTitleVariants = 1;                // 2 = emitir raw2 por caja (F4)
+  int maxTitleBoxes = 3;                   // F4: 5
+};
+
 // round() de Python redondea el .5 al PAR (banker's); std::lround lo aleja
 // de cero. Donde el port replica un round() de Python va esto, o los glifos
 // salen un píxel distintos y el test de paridad lo marca.
@@ -73,11 +90,22 @@ cv::Mat focusBand(const cv::Mat& roi);
 // Corrida de glifos de altura y separación coherentes: descarta BPM,
 // "FREE PLAY" y el nombre del jugador. Vale 15 puntos de acierto.
 std::vector<cv::Rect> dominantLine(std::vector<cv::Rect> boxes);
-std::vector<Glyph> segmentChars(const cv::Mat& roi, int wantN = 0);
+std::vector<Glyph> segmentChars(const cv::Mat& roi, int wantN = 0,
+                                BinMode mode = BinMode::Legacy);
+// Las dos mejores lecturas de la misma caja (best y 2ª): el raw2 de F4 sale de
+// acá. `out` queda vacío si hay una sola lectura plausible.
+std::vector<std::vector<Glyph>> segmentCharsVariants(
+    const cv::Mat& roi, int wantN = 0, BinMode mode = BinMode::Legacy);
+// Deskew fino del título (F1.3.5): estima la pendiente dominante del ROI y
+// corrige ±5° con warpAffine. Identidad si no hay línea clara.
+cv::Mat deskewBand(const cv::Mat& roi, float maxDeg = 5.f);
 
 // --- badge.cpp ---------------------------------------------------------
 // naranja/rojo=single, verde=double, azul=halfdouble, amarillo=coop
-bool classifyChartType(const cv::Mat& roi, std::string* out, float* conf);
+// `chars` solo lo usa BadgeMode::Fusion (lee el sub-label sobre los dígitos).
+bool classifyChartType(const cv::Mat& roi, std::string* out, float* conf,
+                       BadgeMode mode = BadgeMode::Color,
+                       const class Templates* chars = nullptr);
 
 // --- recognize.cpp -----------------------------------------------------
 // Etiqueta de plantilla -> dígito 0..9, o -1. level.bin trae code points.
@@ -104,10 +132,25 @@ class Templates {
 // Dígitos de una franja de una sola línea. Necesita el clasificador para
 // elegir el umbral: la regularidad sola no distingue un dígito de un borrón.
 std::vector<Glyph> segmentDigits(const cv::Mat& roi, const Templates& digits,
-                                 int scale = 4);
+                                 int scale = 4, BinMode mode = BinMode::Legacy);
 // Score de PIU Phoenix, 0..1000000. false si no se pudo leer.
 bool readScore(const cv::Mat& roi, const Templates& digits, int* value,
-               float* margin, std::string* rawDigits);
+               float* margin, std::string* rawDigits,
+               BinMode mode = BinMode::Legacy);
+
+// --- rectify.cpp -------------------------------------------------------
+// Pantalla detectada como cuadrilátero dentro de `screenBox` y enderezada por
+// perspectiva. `warp` es la pantalla recta; `Hinv` mapea coords de warp de
+// vuelta a la foto original (para dibujar). `ok=false` ⇒ el camino actual sigue.
+struct Rectify {
+  bool ok = false;
+  cv::Mat warp;    // CV_8UC3, pantalla enderezada
+  cv::Mat Hinv;    // 3x3, warp -> foto
+};
+Rectify rectifyScreen(const cv::Mat& bgr, const Box& screenBox);
+// Mapea una caja de coords de warp a coords de la foto (bounding box de sus 4
+// esquinas). `Hinv` vacío ⇒ devuelve la caja tal cual (identidad).
+Box mapBoxBack(const cv::Mat& Hinv, const Box& b);
 
 // --- pipeline.cpp ------------------------------------------------------
 // Lo que corre nativeRead, sin JNI: lo comparten el .so y el CLI de host
@@ -121,12 +164,16 @@ class Engine {
                    std::vector<Box>* usedBoxes = nullptr) const;
   static const char* emptyJson();
   std::vector<Aug> augs = defaultAugs();     // el CLI las cambia para medir
+  Options opts;                              // default == comportamiento actual
  private:
   Templates chars_, level_, digits_;
   Detector det_;
   // Segunda detección dentro de la pantalla (fullscore) cuando ocupa poco del
   // encuadre: una foto lejana. Devuelve cajas en coordenadas de la imagen.
   std::vector<Box> zoomIn(const cv::Mat& img, std::vector<Box> first) const;
+  // F1/F4.10: sobre la pantalla enderezada, sube la resolución de las cajas de
+  // título demasiado bajas (glifo ya degradado) con una detección local.
+  std::vector<Box> zoomTinyTitles(const cv::Mat& work, std::vector<Box> boxes) const;
 };
 
 }  // namespace piu

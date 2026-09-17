@@ -181,8 +181,45 @@ std::pair<int, float> plausibility(const std::vector<cv::Rect>& boxes) {
 
 }  // namespace
 
+// F2: agrega a la lista de umbralizados una versión con CLAHE y una
+// adaptiveThreshold. Legacy no agrega nada (el default no cambia). En All, los
+// viejos van primero, así que en empate gana el camino de siempre.
+static void addLightVariants(const cv::Mat& gray, BinMode mode,
+                             std::vector<cv::Mat>* cands) {
+  if (mode == BinMode::Legacy) return;
+  if (mode == BinMode::Clahe || mode == BinMode::All) {
+    cv::Mat eq;
+    cv::Ptr<cv::CLAHE> cl = cv::createCLAHE(2.0, {8, 8});
+    cl->apply(gray, eq);
+    cv::Mat otsu;
+    cv::threshold(eq, otsu, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    cands->push_back(otsu);
+    cv::Mat inv;
+    cv::bitwise_not(otsu, inv);
+    cands->push_back(inv);
+    int hist[256];
+    std::fill(std::begin(hist), std::end(hist), 0);
+    for (int y = 0; y < eq.rows; ++y) {
+      const uchar* row = eq.ptr<uchar>(y);
+      for (int x = 0; x < eq.cols; ++x) ++hist[row[x]];
+    }
+    for (int p : {60, 70, 78, 85, 90, 94})
+      cands->push_back(eq > percentileLinear(hist, eq.total(), float(p)));
+  }
+  if (mode == BinMode::Adaptive || mode == BinMode::All) {
+    cv::Mat ad;
+    const int bs = std::max(11, (gray.rows / 2) | 1);
+    cv::adaptiveThreshold(gray, ad, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                          cv::THRESH_BINARY, bs, 5);
+    cands->push_back(ad);
+    cv::Mat adi;
+    cv::bitwise_not(ad, adi);
+    cands->push_back(adi);
+  }
+}
+
 std::vector<Glyph> segmentDigits(const cv::Mat& roi, const Templates& digits,
-                                 int scale) {
+                                 int scale, BinMode mode) {
   if (roi.empty()) return {};
   cv::Mat gray;
   if (roi.channels() == 3) cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY); else gray = roi;
@@ -208,6 +245,8 @@ std::vector<Glyph> segmentDigits(const cv::Mat& roi, const Templates& digits,
   }
   for (int p : {60, 70, 78, 85, 90, 94})
     cands.push_back(gray > percentileLinear(hist, gray.total(), float(p)));
+
+  addLightVariants(gray, mode, &cands);
 
   std::vector<Glyph> best;
   int bestCount = -2;
@@ -236,11 +275,11 @@ std::vector<Glyph> segmentDigits(const cv::Mat& roi, const Templates& digits,
 }
 
 bool readScore(const cv::Mat& roi, const Templates& digits, int* value,
-               float* margin, std::string* rawDigits) {
+               float* margin, std::string* rawDigits, BinMode mode) {
   *value = -1;
   *margin = 0.f;
   rawDigits->clear();
-  auto gs = segmentDigits(roi, digits);
+  auto gs = segmentDigits(roi, digits, 4, mode);
   if (gs.empty()) return false;
 
   std::vector<int> lab; std::vector<float> mar;
