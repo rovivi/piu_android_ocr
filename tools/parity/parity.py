@@ -48,6 +48,13 @@ PHOTOS = os.path.join(PIU_OCR, "DATASET")
 MOBILE = os.path.join(PIU_OCR, "build_mobile")
 ASSETS = os.path.join(ANDROID, "src", "main", "assets", "piu_ocr")
 CLI = os.path.join(ANDROID, "build_host", "piuocr_cli")
+FIXTURE = os.path.join(ANDROID, "src", "test", "resources", "parity_fixture.json")
+FIXTURE_NOTE = (
+    "generado por tools/parity/parity.py (--fixture o --regen-expected). "
+    "'expected' es la réplica de PiuOcr.interpret: usa el Catalog de piu_ocr "
+    "si está al lado, si no tools/parity/song_match_ref.py. ParityTest.kt "
+    "exige igualdad con el interpret() real de Kotlin."
+)
 VENV_PY = os.path.join(ROOT, "piu_yolo", "venv", "bin", "python")
 
 CLS = {"difficulty": 0, "fullscore": 1, "rank": 2, "score": 3, "song_name": 4}
@@ -90,14 +97,33 @@ def _reexec_with_venv():
     sys.exit("falta cv2: correr con piu_yolo/venv/bin/python")
 
 
-_reexec_with_venv()
-import cv2  # noqa: E402
-import numpy as np  # noqa: E402
+# El matcher: el paquete Python de referencia si está al lado, si no la réplica
+# local (song_match_ref.py). Hace falta en todos los modos, incluso sin fotos.
+try:
+    sys.path.insert(0, ROOT)
+    from piu_ocr.song_match import Catalog, normalize  # noqa: E402
+except ImportError:
+    from song_match_ref import Catalog, normalize  # noqa: E402
 
-sys.path.insert(0, ROOT)
-from piu_ocr.pipeline import ResultReader  # noqa: E402
-from piu_ocr.recognize import TemplateDigits  # noqa: E402
-from piu_ocr.song_match import Catalog, normalize  # noqa: E402
+# El pipeline Python (cv2 + ResultReader) solo hace falta para la capa 1 sobre
+# fotos. Se importa de forma diferida para que --from-device, --synth y
+# --regen-expected corran aunque el proyecto piu_ocr no esté al lado.
+cv2 = np = ResultReader = TemplateDigits = None
+
+
+def ensure_python_ref():
+    """Carga cv2 y el ResultReader de referencia, relanzando con el venv."""
+    global cv2, np, ResultReader, TemplateDigits
+    if ResultReader is not None:
+        return
+    _reexec_with_venv()
+    import cv2 as _cv2
+    import numpy as _np
+    cv2, np = _cv2, _np
+    sys.path.insert(0, ROOT)
+    from piu_ocr.pipeline import ResultReader as _RR
+    from piu_ocr.recognize import TemplateDigits as _TD
+    ResultReader, TemplateDigits = _RR, _TD
 
 
 # ── nativo ───────────────────────────────────────────────────────────────────
@@ -198,6 +224,7 @@ def interpret(native, catalog):
 
 def make_reader():
     """ResultReader con LAS MISMAS plantillas que viajan en el .so."""
+    ensure_python_ref()
     r = ResultReader(catalog=os.path.join(D2, "catalog.json"))
     r.chars = TemplateDigits.load_packed(os.path.join(MOBILE, "chars.npz"))
     # `digits` ya sale de build_mobile/digits.npz por el default de
@@ -541,6 +568,31 @@ def run_synth(a):
     return n > 0 and (ok == n or fresh)
 
 
+# ── regen de expected (sin fotos) ───────────────────────────────────────────
+
+def regen_expected():
+    """Reescribe el `expected` del fixture a partir del `native` ya guardado.
+
+    `expected` es función pura de `native` + catálogo, así que se puede
+    recalcular sin las fotos ni el pipeline Python. Sirve cuando cambia un gate
+    de Kotlin y el fixture quedó desfasado pero no está la máquina con datos.
+    Usa el catálogo de assets, que es el que lee `ParityTest.kt`.
+    """
+    if not os.path.exists(FIXTURE):
+        print(f"falta {FIXTURE}")
+        return False
+    fx = json.load(open(FIXTURE))
+    catalog = Catalog(os.path.join(ASSETS, "catalog.json"))
+    fx["_note"] = FIXTURE_NOTE
+    for row in fx["rows"]:
+        rep = interpret(row["native"], catalog)
+        row["expected"] = {k: rep[k]
+                           for k in ("song", "level", "chart_type", "score", "raw")}
+    json.dump(fx, open(FIXTURE, "w"), indent=1, ensure_ascii=False)
+    print(f"expected regenerado: {FIXTURE} ({len(fx['rows'])} filas)")
+    return True
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -571,6 +623,8 @@ def main():
                     help="F0.2: acierto por campo dentro de cada condición")
     ap.add_argument("--synth", action="store_true",
                     help="F0.3: valida sobre pantallas sintéticas (tools/synth.py)")
+    ap.add_argument("--regen-expected", action="store_true",
+                    help="reescribe 'expected' del fixture desde el 'native' guardado (sin fotos)")
     a = ap.parse_args()
     global AUGS, EXTRA_FLAGS
     AUGS = a.augs
@@ -588,6 +642,8 @@ def main():
         sys.exit(0 if from_device(a.from_device, a.tol) else 1)
     if a.synth:
         sys.exit(0 if run_synth(a) else 1)
+    if a.regen_expected:
+        sys.exit(0 if regen_expected() else 1)
 
     build_cli()
     boxes = {b["key"]: b for b in json.load(open(os.path.join(D2, "boxes.json")))}
@@ -656,11 +712,10 @@ def main():
         json.dump({"metrics": m, "rows": rows, "detect": detect_rows},
                   open(a.json, "w"), indent=1, ensure_ascii=False)
     if a.fixture:
-        fx = os.path.join(ANDROID, "src", "test", "resources", "parity_fixture.json")
+        fx = FIXTURE
         os.makedirs(os.path.dirname(fx), exist_ok=True)
         json.dump({
-            "_note": "generado por tools/parity/parity.py --fixture. 'expected' es la "
-                     "réplica Python de PiuOcr.interpret; ParityTest.kt exige igualdad.",
+            "_note": FIXTURE_NOTE,
             "rows": [{"key": r["key"], "native": r["native_json"], "gt": r["gt"],
                       "expected": {k: r["native"][k] for k in ("song", "level", "chart_type", "score", "raw")}}
                      for r in rows + detect_rows],

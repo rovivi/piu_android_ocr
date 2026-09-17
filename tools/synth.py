@@ -68,7 +68,10 @@ def find_font(size):
 
 
 def draw_screen(song, chart, level, score, rank):
-    img = Image.new("RGB", (SCREEN_W, SCREEN_H), (28, 30, 40))
+    # Pantalla BRILLANTE sobre la cabina oscura: es la premisa del rectify
+    # (Otsu separa la pantalla). Un cuerpo casi negro hacía que el mayor
+    # contorno fuera la banda del título y F1 abortara.
+    img = Image.new("RGB", (SCREEN_W, SCREEN_H), (150, 170, 205))
     d = ImageDraw.Draw(img)
     # Banda del título (clara, como en Phoenix) + título oscuro encima.
     d.rectangle([0, 20, SCREEN_W, 140], fill=(235, 235, 240))
@@ -104,6 +107,36 @@ def perspective_quad(angle_deg, rng):
     x0, y0 = 60 + jx, 60 + jy
     x1, y1 = PHOTO_W - 60 + jx, PHOTO_H - 60 + jy
     return [(x0 + inset, y0), (x1 - inset, y0), (x1, y1), (x0, y1)]
+
+
+def homography(src, dst):
+    """Homografía 3x3 que mapea src -> dst (4 puntos cada uno), vía DLT."""
+    A, b = [], []
+    for (x, y), (u, v) in zip(src, dst):
+        A.append([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.append(u)
+        A.append([0, 0, 0, x, y, 1, -v * x, -v * y]); b.append(v)
+    h = np.linalg.solve(np.array(A, float), np.array(b, float))
+    return np.array([[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]])
+
+
+def map_box(H, box):
+    """Bounding box en coords destino de un rect de la pantalla flat."""
+    x1, y1, x2, y2 = box
+    pts = np.array([[x1, y1, 1], [x2, y1, 1], [x2, y2, 1], [x1, y2, 1]], float).T
+    p = H @ pts
+    p = p[:2] / p[2]
+    return [int(round(p[0].min())), int(round(p[1].min())),
+            int(round(p[0].max())), int(round(p[1].max()))]
+
+
+# Rectángulos de cada campo en coords de la pantalla flat (draw_screen).
+FIELD_BOXES = {
+    "song_name": (0, 20, SCREEN_W, 140),
+    "fullscore": (0, 0, SCREEN_W, SCREEN_H),
+    "rank": (1000, 520, 1240, 680),
+    "score": (420, 300, 1240, 470),
+    "difficulty": (70, 250, 330, 510),
+}
 
 
 def find_coeffs(pa, pb):
@@ -154,7 +187,10 @@ def build(out_dir, seed=7):
                     rank = run.choice(RANKS)
                     # El score solo se conoce a medias en una foto 2P; acá va uno.
                     screen = draw_screen(song, chart, level, score, rank)
-                    photo = composite(screen, perspective_quad(angle, run))
+                    quad = perspective_quad(angle, run)
+                    H = homography([(0, 0), (SCREEN_W, 0), (SCREEN_W, SCREEN_H),
+                                    (0, SCREEN_H)], quad)
+                    photo = composite(screen, quad)
                     photo = photometric(photo, brightness, glare, nprng)
                     name = f"{song.replace(' ', '_')}_a{angle}_b{int(brightness*100)}" \
                            f"_g{int(glare)}.png"
@@ -165,6 +201,8 @@ def build(out_dir, seed=7):
                                "score": score},
                         "cond": {"angle": angle, "brightness": brightness,
                                  "glare": glare},
+                        # cajas GT en coords de la FOTO (para --box: aísla el OCR)
+                        "boxes": {k: map_box(H, v) for k, v in FIELD_BOXES.items()},
                     })
     with open(os.path.join(out_dir, "gt.json"), "w") as f:
         json.dump(cases, f, indent=1)

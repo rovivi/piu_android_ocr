@@ -1,59 +1,40 @@
-# Test de paridad: el `.so` contra el pipeline Python
+# Test de paridad
 
-Corre el **mismo C++ que va al AAR** (compilado como binario Linux) sobre las
-58 fotos de `piu_ocr/dataset_v2` y lo compara con `ResultReader` de Python y
-con el ground truth. Es el test de regresión de cualquier cambio en el módulo.
+Herramienta del test de regresión del módulo. Corre el **mismo C++ que va al
+AAR** (compilado como binario Linux con `tools/host/`) sobre las fotos de
+`piu_ocr/dataset_v2` y lo compara con `ResultReader` de Python y con el ground
+truth.
+
+La guía completa de verificación (las tres capas, el layout que espera, el
+baseline y la validación sintética) está en
+[`docs/VERIFICACION.md`](../../docs/VERIFICACION.md). Acá va lo mínimo:
 
 ```bash
-# una vez: prebuilts Linux de ncnn + opencv-mobile (mismas versiones que el .so)
-tools/host/fetch.sh
-
-# OCR con las cajas de PyTorch (aísla el port), lista fotos que difieren
-python3 tools/parity/parity.py --diff
-
-# + detector NCNN end-to-end, regraba fixture y baseline
-python3 tools/parity/parity.py --detect --fixture --update-baseline
-
-# lo que corre antes de un commit: falla si alguna métrica cae
-python3 tools/parity/parity.py --detect --baseline
-gradle testReleaseUnitTest          # Kotlin interpret() == réplica Python, 90 filas
+tools/host/fetch.sh                                   # una vez: prebuilts Linux
+python3 tools/parity/parity.py --detect --baseline    # falla si alguna métrica cae
+./gradlew testReleaseUnitTest                         # Kotlin == réplica Python
+tools/parity/device.sh                                # el .so arm64 real, por adb
 ```
 
 Piezas:
 
 | qué | dónde |
 |---|---|
-| binario de host (`piuocr_cli`) | `tools/host/` → `build_host/piuocr_cli`. Usa `src/main/cpp/pipeline.cpp`, que es lo que llama `nativeRead` |
+| binario de host (`piuocr_cli`) | `tools/host/` → `build_host/piuocr_cli` |
 | comparador | `tools/parity/parity.py` (se relanza solo con el venv de `piu_yolo` si falta cv2) |
+| matcher de referencia | `piu_ocr/song_match.py` si está al lado; si no `tools/parity/song_match_ref.py` |
 | métricas de referencia | `tools/parity/baseline.json` |
-| fixture para Kotlin | `src/test/resources/parity_fixture.json` → `src/test/kotlin/.../ParityTest.kt` |
+| gráficas del informe | `tools/parity/report.py` → `docs/img/*.png` |
+| animaciones del README | `tools/parity/animate.py` → `docs/img/*.gif` |
+| fixture para Kotlin | `src/test/resources/parity_fixture.json` → `ParityTest.kt` |
 
-Qué mide: por campo (song / level / chart_type), cobertura, precisión y
-acierto contra GT para Python y para nativo; acuerdo nativo == python por
-campo y sobre el texto crudo; recall del detector NCNN contra las cajas de
-PyTorch+TTA; latencia nativa en host.
+Sin el dataset al lado, el fixture igual se puede resincronizar desde el `native`
+ya guardado: `python3 tools/parity/parity.py --regen-expected`.
 
-Diferencias que quedan **a propósito** (nativo ≠ Python, medidas contra GT):
+## Diferencias que quedan **a propósito** (nativo ≠ Python)
 
 - `level`: nativo fuerza 2 dígitos en la bolita (`segmentBadge(..., 2)`), Python
   no. Nativo 0.872 de precisión vs 0.795.
 - texto crudo: ~29 % de las fotos difieren en un carácter (empates en el
   producto punto con float32 en orden distinto). El match al catálogo lo absorbe:
   acuerdo de canción 0.978.
-
-## En device
-
-```bash
-tools/parity/device.sh        # teléfono arm64 por adb; JAVA_HOME/ANDROID_HOME como para assembleRelease
-```
-
-Instala `piu-ocr-debug-androidTest.apk`, empuja las 45 fotos con GT a
-`/sdcard/Android/data/com.piu.ocr.test/files/piu_parity/`, corre
-`DeviceParityTest` (el `PiuOcr` real: `.so` arm64 + Kotlin) y baja
-`results.json` a `build/device_results.json`. `parity.py --from-device` reporta:
-
-- acierto end-to-end contra GT, comparado con `baseline.native_e2e` (±1 foto);
-- Kotlin en device vs réplica Python sobre el mismo JSON (debe ser 0);
-- `.so` arm64 vs CLI de host foto por foto (misma lógica, otra CPU: lo que
-  difiera es fp16/orden de flotantes, no un bug — salvo que sea mucho);
-- latencia real por foto.

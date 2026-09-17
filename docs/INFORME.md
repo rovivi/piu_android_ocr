@@ -1,13 +1,16 @@
-# piu-ocr Android — informe de estado
+# Informe de estado
 
 Lectura de pantallas de resultado de Pump It Up en el teléfono, sin LLM:
 YOLO en NCNN + OCR clásico en C++ (OpenCV core/imgproc) + matching difuso
-contra el catálogo en Kotlin. Un AAR de 9.4 MB, ABI `arm64-v8a`.
+contra el catálogo en Kotlin. Un AAR de **~22 MB con las cuatro ABIs**.
 
-Este informe resume qué se midió, qué se arregló y qué falta. Todos los
-números salen de `tools/parity/parity.py` sobre las **45 fotos de cabina con
-ground truth** de `piu_ocr/dataset_v2` (58 en total, 45 con título legible), y
-se regeneran con:
+Este informe resume qué se midió, qué se arregló y qué falta. Para el diseño por
+dentro ver [ARQUITECTURA.md](ARQUITECTURA.md); para correr los tests,
+[VERIFICACION.md](VERIFICACION.md).
+
+Todos los números salen de `tools/parity/parity.py` sobre las **45 fotos de
+cabina con ground truth** de `piu_ocr/dataset_v2` (58 en total, 45 con título
+legible), y se regeneran con:
 
 ```bash
 python3 tools/parity/parity.py --detect --json docs/parity_detail.json --update-baseline
@@ -133,21 +136,29 @@ la latencia en el teléfono no cierra.
 ```bash
 tools/host/fetch.sh                                   # una vez: ncnn + opencv-mobile Linux
 python3 tools/parity/parity.py --detect --baseline    # falla si alguna métrica cae
-gradle testReleaseUnitTest                            # Kotlin interpret() == réplica Python, 90 filas
+./gradlew testReleaseUnitTest                         # Kotlin interpret() == réplica Python, 90 filas
 tools/parity/device.sh                                # lo mismo, en un teléfono por adb
 ```
 
 Tres capas: el C++ como binario de host contra Python y ground truth
 (`baseline.json` como gate de regresión); un fixture que `ParityTest.kt`
 reproduce con el `PiuOcr.interpret()` real en la JVM; y el test instrumentado
-que corre el `.so` arm64 real y compara contra las otras dos.
+que corre el `.so` arm64 real y compara contra las otras dos. El detalle de cada
+capa y de la validación sintética está en
+[VERIFICACION.md](VERIFICACION.md).
 
 ## 8. Lo que falta
 
-- **Correr en device.** Todo lo de arriba es en x86; ncnn en ARM usa fp16 y
-  puede mover 1–3 fotos. Latencia estimada 2–4 s por foto con 3 pasadas.
-- **Chart type y nivel con cajas NCNN** (0.77 / 0.71): medir `pad` de la bolita.
+- **Correr en device.** Los números de arriba son del CLI de host (x86); ncnn en
+  ARM usa fp16 y puede mover 1–3 fotos. El test instrumentado ya existe
+  (`tools/parity/device.sh`), falta correrlo y registrar el resultado. Latencia
+  estimada 2–4 s por foto con 3 pasadas.
+- **Validar los flags opt-in** (rectify, bin modes, badge adaptativo) con el A/B
+  por buckets sobre el dataset real. Están implementados pero con el default en
+  el camino viejo. Ver [PLAN_LUZ_ANGULO.md](PLAN_LUZ_ANGULO.md).
+- **Chart type y nivel con cajas NCNN** (0.77 / 0.71): medir el `pad` de la
+  bolita.
 - **Export dinámico del YOLO** para un TTA multi-escala real, o más fotos de
   entrenamiento en las que `song_name` sale con poca confianza.
-- Latencia: el detector es el 90 % del tiempo. Cuantización int8 real
+- Latencia: el detector es el ~90 % del tiempo. Cuantización int8 real
   (`ncnn2int8`, ≥300 imágenes de calibración) es la palanca grande.

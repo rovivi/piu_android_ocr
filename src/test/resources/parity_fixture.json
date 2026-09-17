@@ -1,5 +1,5 @@
 {
- "_note": "generado por tools/parity/parity.py --fixture. 'expected' es la réplica Python de PiuOcr.interpret; ParityTest.kt exige igualdad.",
+ "_note": "generado por tools/parity/parity.py (--fixture o --regen-expected). 'expected' es la réplica de PiuOcr.interpret: usa el Catalog de piu_ocr si está al lado, si no tools/parity/song_match_ref.py. ParityTest.kt exige igualdad con el interpret() real de Kotlin.",
  "rows": [
   {
    "key": "748265092",
@@ -1210,8 +1210,8 @@
     "score": 972340
    },
    "expected": {
-    "song": "Ultimatum",
-    "level": 21,
+    "song": null,
+    "level": 22,
     "chart_type": "single",
     "score": 972340,
     "raw": "wU8tuM | *N'BZ\"Lm | l.hcUoyeYourSteP"
@@ -1584,7 +1584,7 @@
     "score": 970350
    },
    "expected": {
-    "song": "Imaginarized City",
+    "song": null,
     "level": 19,
     "chart_type": "halfdouble",
     "score": 970350,
@@ -2281,8 +2281,8 @@
     "score": 961258
    },
    "expected": {
-    "song": null,
-    "level": 23,
+    "song": "Blazing",
+    "level": 20,
     "chart_type": "halfdouble",
     "score": 961258,
     "raw": "Blaztmg | BA2V)"
@@ -2521,8 +2521,8 @@
     "score": 979534
    },
    "expected": {
-    "song": "Point Break",
-    "level": 13,
+    "song": null,
+    "level": 21,
     "chart_type": "single",
     "score": 979534,
     "raw": "P\"\"'!O-B' | An0StBlon | PPNd\""
@@ -2852,8 +2852,8 @@
     "score": 979534
    },
    "expected": {
-    "song": "Point Break",
-    "level": 13,
+    "song": null,
+    "level": 21,
     "chart_type": "single",
     "score": 979534,
     "raw": "P\"\"'!O-B' | An0StBlon | PPNd\""
@@ -2919,8 +2919,8 @@
     "score": 886899
    },
    "expected": {
-    "song": "Keep On!",
-    "level": 13,
+    "song": null,
+    "level": 12,
     "chart_type": "double",
     "score": 886890,
     "raw": "\"eePkxi(,64OO | \"\"?*GlxJ6N6QO | ]\"\")LPl,,466B"
@@ -2986,8 +2986,8 @@
     "score": 948384
    },
    "expected": {
-    "song": "N",
-    "level": 16,
+    "song": null,
+    "level": 23,
     "chart_type": "double",
     "score": 948384,
     "raw": "P~1Drur'.N | 'bBkTC | RPBDr"
@@ -3321,8 +3321,8 @@
     "score": 941655
    },
    "expected": {
-    "song": "See",
-    "level": 23,
+    "song": null,
+    "level": 22,
     "chart_type": "double",
     "score": 941655,
     "raw": "AnEu1SEEeFomSEiNN | KPo&uishTdunMNNlN | 2"
@@ -3536,7 +3536,7 @@
     "score": 995030
    },
    "expected": {
-    "song": null,
+    "song": "The Last Rebellion",
     "level": null,
     "chart_type": "halfdouble",
     "score": 995030,
@@ -4367,7 +4367,7 @@
     "score": 952208
    },
    "expected": {
-    "song": "N",
+    "song": null,
     "level": null,
     "chart_type": "single",
     "score": 952208,
@@ -4961,7 +4961,7 @@
     "score": 954828
    },
    "expected": {
-    "song": null,
+    "song": "Extreme Music School 1st period feat. Nanahira",
     "level": 23,
     "chart_type": "double",
     "score": 954828,
@@ -5217,7 +5217,7 @@
     "score": 962330
    },
    "expected": {
-    "song": "BLAZOR",
+    "song": null,
     "level": 24,
     "chart_type": "double",
     "score": 962330,

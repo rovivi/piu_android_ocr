@@ -4,8 +4,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(TP ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party)
 
-# opencv-mobile: solo core+imgproc (~2 MB). El SDK completo son 60 MB y este
-# módulo usa 10 funciones — ver MODULO_ANDROID.md §2.
+# opencv-mobile: solo core+imgproc (~2 MB). El SDK completo son ~60 MB y este
+# módulo usa un subconjunto chico — ver docs/ARQUITECTURA.md §4.
 set(OpenCV_DIR ${TP}/opencv-mobile-4.13.0-android/sdk/native/jni)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 

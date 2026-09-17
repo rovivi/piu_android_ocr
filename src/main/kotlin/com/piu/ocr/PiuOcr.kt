@@ -273,7 +273,7 @@ class PiuOcr private constructor(
             loaded = true
         }
 
-        // Gates medidos end-to-end con LOSO por foto. Ver MODULO_ANDROID.md §3:
+        // Gates medidos end-to-end con LOSO por foto. Ver docs/ARQUITECTURA.md §8:
         // cambiarlos degrada el sistema EN SILENCIO.
         //   canción  0.010 -> cob 0.889 / prec 0.900   <- este (2026-09-09)
         //            0.015 -> cob 0.800 / prec 0.972

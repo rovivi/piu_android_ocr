@@ -1,4 +1,4 @@
-// Puerto de piu_ocr/segment.py. Ver ../../../MODULO_ANDROID.md §3 antes de
+// Puerto de piu_ocr/segment.py. Ver ../../../docs/ARQUITECTURA.md §7 antes de
 // tocar cualquier constante: cada una salió de una medición.
 #include "piu_ocr.h"
 #include <opencv2/imgproc.hpp>

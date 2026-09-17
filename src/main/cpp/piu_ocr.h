@@ -3,7 +3,7 @@
 //
 // Las constantes son el resultado de mediciones, varias contraintuitivas.
 // Cambiarlas degrada el sistema EN SILENCIO: sigue respondiendo, solo que peor.
-// Ver android/MODULO_ANDROID.md §3 antes de tocar cualquiera.
+// Ver docs/ARQUITECTURA.md §7 antes de tocar cualquiera.
 #pragma once
 #include <opencv2/core.hpp>
 #include <cmath>
