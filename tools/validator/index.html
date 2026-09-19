@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PIU OCR · dataset v2</title>
+<style>
+  :root { --bg:#12141a; --panel:#1b1e27; --line:#2c3040; --txt:#e8eaf0; --dim:#8b90a3;
+          --ok:#39d98a; --warn:#f5b74a; --bad:#f0555a; --acc:#4aa3f5; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--txt); }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; background:var(--panel);
+           border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0 8px 0 0; white-space:nowrap; }
+  .grow { flex:1; }
+  .bar { width:180px; height:8px; background:#0b0d12; border-radius:4px; overflow:hidden; }
+  .bar > i { display:block; height:100%; width:0; background:var(--ok); transition:width .2s; }
+  button, select { background:#252a37; color:var(--txt); border:1px solid var(--line); border-radius:6px;
+                   padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#04101f; font-weight:600; }
+  button.ghost { background:transparent; }
+  .wrap { display:grid; grid-template-columns:300px 1fr; height:calc(100vh - 53px); }
+  .list { overflow:auto; border-right:1px solid var(--line); }
+  .row { display:flex; gap:8px; align-items:center; padding:6px 10px; cursor:pointer; border-bottom:1px solid #23262f; }
+  .row:hover { background:#222734; }
+  .row.sel { background:#26324a; }
+  .row img { width:56px; height:38px; object-fit:cover; border-radius:4px; background:#000; flex:none; }
+  .row .t { min-width:0; }
+  .row .t b { display:block; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .t span { color:var(--dim); font-size:12px; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .dot.exact { background:var(--ok); } .dot.fuzzy { background:var(--warn); } .dot.none { background:var(--bad); }
+  .dot.val { background:var(--acc); }
+  .detail { overflow:auto; padding:16px 20px; display:grid; grid-template-columns:minmax(0,1.2fr) minmax(320px,1fr); gap:20px; align-content:start; }
+  .detail img.big { width:100%; border-radius:8px; background:#000; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .card h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; color:var(--dim); margin-bottom:4px; }
+  input[type=text], input[type=number] { width:100%; background:#0f1218; color:var(--txt); border:1px solid var(--line);
+                                          border-radius:6px; padding:8px; font:inherit; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .chip { font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid var(--line); background:#222734; cursor:pointer; }
+  .chip:hover { border-color:var(--acc); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; font-weight:600; }
+  .badge.exact { background:#123d2a; color:var(--ok); }
+  .badge.fuzzy { background:#3d3112; color:var(--warn); }
+  .badge.none { background:#3d1416; color:var(--bad); }
+  .badge.val { background:#122c4a; color:var(--acc); }
+  .muted { color:var(--dim); font-size:12px; }
+  .nav { display:flex; gap:8px; margin-top:8px; }
+  .mono { font-family:ui-monospace,Menlo,monospace; }
+  .empty { color:var(--dim); padding:40px; text-align:center; grid-column:1/-1; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--ok); color:#04101f;
+           padding:8px 16px; border-radius:8px; font-weight:600; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PIU OCR · dataset v2</h1>
+  <div class="bar" title="validadas"><i id="bar"></i></div>
+  <span class="muted" id="progress">0 / 0</span>
+  <select id="filter">
+    <option value="all">Todas</option>
+    <option value="pending">Sin validar</option>
+    <option value="mismatch">No coinciden</option>
+    <option value="done">Validadas</option>
+  </select>
+  <span class="grow"></span>
+  <button id="save" class="primary">Guardar</button>
+  <button id="download" class="ghost">Descargar JSON</button>
+</header>
+<div class="wrap">
+  <div class="list" id="list"></div>
+  <div class="detail" id="detail"><div class="empty">Elegí una imagen</div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let DATA = null, CATALOG = null, SEL = -1;
+
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const imgURL = f => '/img/' + encodeURIComponent(f);
+const songOf = it => it.song_final ?? it.song_ocr;
+const scoreOf = it => it.score_final ?? it.score_ocr;
+const mismatch = it => it.catalog_match && it.song_ocr.toLowerCase().trim() !== it.catalog_match.name.toLowerCase().trim();
+const TYPE_LABEL = { s: 'SINGLE', d: 'DOUBLE', hd: 'HALFDOUBLE', c: 'COOP' };
+const normalize = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+function chartsFor(song) {
+  if (!CATALOG) return [];
+  const k = normalize(song);
+  for (const [key, o] of Object.entries(CATALOG)) {
+    if (normalize(o.n) === k || normalize(key) === k) return o.c || [];
+  }
+  return [];
+}
+
+async function load() {
+  [DATA, CATALOG] = await Promise.all([
+    fetch('/dataset_v2.json').then(r => r.json()),
+    fetch('/catalog.json').then(r => r.json()),
+  ]);
+  DATA.items.forEach(it => { if (it.validated === undefined) it.validated = false; });
+  renderList(); refreshProgress();
+}
+
+function visible() {
+  const f = $('#filter').value;
+  return DATA.items.map((it, i) => ({ it, i })).filter(({ it }) => {
+    if (f === 'pending') return !it.validated;
+    if (f === 'done') return it.validated;
+    if (f === 'mismatch') return mismatch(it) || it.match_status === 'none';
+    return true;
+  });
+}
+
+function renderList() {
+  const list = $('#list'); list.innerHTML = '';
+  for (const { it, i } of visible()) {
+    const d = document.createElement('div');
+    d.className = 'row' + (i === SEL ? ' sel' : '');
+    d.onclick = () => select(i);
+    const cls = it.validated ? 'val' : it.match_status;
+    const chart = it.chart_final ? ` · ${(TYPE_LABEL[it.chart_final] || it.chart_final)[0]}${it.level_final ?? ''}` : '';
+    d.innerHTML = `<img loading="lazy" src="${imgURL(it.file)}">
+      <div class="t"><b>${esc(songOf(it))}</b><span class="mono">${scoreOf(it) ?? '—'}${chart}</span></div>
+      <div class="dot ${cls}" title="${it.validated ? 'validada' : it.match_status}"></div>`;
+    list.appendChild(d);
+  }
+}
+
+function select(i) { SEL = i; renderList(); renderDetail(); }
+
+function renderDetail() {
+  const it = DATA.items[SEL]; const box = $('#detail');
+  if (!it) { box.innerHTML = '<div class="empty">Elegí una imagen</div>'; return; }
+  const cm = it.catalog_match;
+  const st = it.validated ? 'val' : it.match_status;
+  const stLabel = it.validated ? 'VALIDADA' : it.match_status.toUpperCase();
+  const chips = (it.candidates || []).map((c, k) =>
+    `<span class="chip" data-song="${esc(c.name)}">${k === 0 ? '★ ' : ''}${esc(c.name)} <b class="muted">${c.score.toFixed(3)}</b></span>`).join('');
+  box.innerHTML = `
+    <div>
+      <img class="big" src="${imgURL(it.file)}" alt="${esc(it.file)}">
+      <p class="muted mono" style="word-break:break-all">${esc(it.file)}</p>
+      ${it.notes ? `<p class="muted">nota: ${esc(it.notes)}</p>` : ''}
+      <div class="nav">
+        <button id="prev" class="ghost" ${SEL === 0 ? 'disabled' : ''}>← Anterior</button>
+        <button id="next" class="ghost" ${SEL === DATA.items.length - 1 ? 'disabled' : ''}>Siguiente →</button>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>Lectura OCR (visión)</h3>
+        <span class="badge ${st}">${stLabel}</span>
+        ${mismatch(it) ? '<span class="badge none" style="margin-left:6px">no coincide con catálogo</span>' : ''}
+        <div class="field" style="margin-top:12px">
+          <label>Canción</label>
+          <input type="text" id="song" value="${esc(songOf(it))}">
+        </div>
+        <div class="field">
+          <label>Score</label>
+          <input type="number" id="score" value="${scoreOf(it) ?? ''}">
+        </div>
+        <button id="confirm">Usar lectura OCR</button>
+        <button id="validate" class="${it.validated ? '' : 'primary'}">${it.validated ? 'Quitar validación' : 'Validar ✓'}</button>
+      </div>
+      <div class="card">
+        <h3>Tipo y nivel (catálogo)</h3>
+        <div class="field"><label>Tipo</label><select id="ctype"></select></div>
+        <div class="field"><label>Nivel</label><select id="level"></select></div>
+        <p class="muted" id="chart-hint"></p>
+      </div>
+      <div class="card">
+        <h3>Catálogo (bdd piu-ocr)</h3>
+        ${cm ? `<p><b>${esc(cm.name)}</b> <span class="badge ${it.match_status}">${cm.score.toFixed(3)}</span></p>
+               <p class="muted">niveles: ${(cm.levels || []).join(', ') || '—'}</p>` : '<p class="muted">sin candidato</p>'}
+        <div class="chips" id="chips">${chips}</div>
+      </div>
+    </div>`;
+  $('#prev').onclick = () => select(SEL - 1);
+  $('#next').onclick = () => select(SEL + 1);
+  $('#confirm').onclick = () => { it.song_final = null; it.score_final = null; renderDetail(); renderList(); };
+  $('#validate').onclick = () => { it.validated = !it.validated; renderDetail(); renderList(); refreshProgress(); };
+  $('#song').onchange = e => { it.song_final = e.target.value.trim() || null; syncLevels(it, true); renderList(); };
+  $('#score').onchange = e => { it.score_final = e.target.value === '' ? null : Number(e.target.value); renderList(); };
+  $('#chips').querySelectorAll('.chip').forEach(c =>
+    c.onclick = () => { it.song_final = c.dataset.song; $('#song').value = c.dataset.song; syncLevels(it, true); renderList(); });
+  syncLevels(it, false);
+}
+
+// Popula los spinners de tipo/nivel desde los charts del catálogo de la canción.
+// reset=true limpia la selección previa (la canción cambió).
+function syncLevels(it, reset) {
+  const cs = chartsFor(songOf(it));
+  const ctype = $('#ctype'), level = $('#level'), hint = $('#chart-hint');
+  if (reset) { it.chart_final = null; it.level_final = null; }
+  if (!cs.length) {
+    ctype.innerHTML = '<option value="">—</option>'; ctype.disabled = true;
+    level.innerHTML = '<option value="">—</option>'; level.disabled = true;
+    hint.textContent = 'canción sin charts en el catálogo';
+    return;
+  }
+  ctype.disabled = false; level.disabled = false;
+  const types = [...new Set(cs.map(c => c[0]))];
+  if (!types.includes(it.chart_final)) it.chart_final = types.length === 1 ? types[0] : null;
+  ctype.innerHTML = '<option value="">—</option>' + types.map(t => `<option value="${t}">${TYPE_LABEL[t] || t}</option>`).join('');
+  ctype.value = it.chart_final || '';
+  const fillLevels = () => {
+    const lv = cs.filter(c => c[0] === it.chart_final).map(c => c[1]).sort((a, b) => a - b);
+    level.innerHTML = '<option value="">—</option>' + lv.map(l => `<option value="${l}">${l}</option>`).join('');
+    if (!lv.includes(it.level_final)) it.level_final = lv.length === 1 ? lv[0] : null;
+    level.value = it.level_final ?? '';
+    level.disabled = !it.chart_final;
+  };
+  fillLevels();
+  hint.textContent = (it.chart_final && it.level_final)
+    ? `${TYPE_LABEL[it.chart_final] || it.chart_final} ${it.level_final}` : '';
+  ctype.onchange = () => { it.chart_final = ctype.value || null; it.level_final = null; fillLevels(); syncHint(it); };
+  level.onchange = () => { it.level_final = level.value === '' ? null : Number(level.value); syncHint(it); };
+}
+
+function syncHint(it) {
+  $('#chart-hint').textContent = (it.chart_final && it.level_final)
+    ? `${TYPE_LABEL[it.chart_final] || it.chart_final} ${it.level_final}` : '';
+}
+
+function refreshProgress() {
+  const done = DATA.items.filter(i => i.validated).length, total = DATA.items.length;
+  $('#progress').textContent = `${done} / ${total}`;
+  $('#bar').style.width = (total ? done / total * 100 : 0) + '%';
+}
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1600); }
+
+$('#filter').onchange = renderList;
+$('#save').onclick = async () => {
+  const r = await fetch('/save', { method: 'POST', body: JSON.stringify(DATA) });
+  const j = await r.json();
+  toast(`guardado · ${j.validated}/${j.total} validadas`);
+};
+$('#download').onclick = () => {
+  const blob = new Blob([JSON.stringify(DATA, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'dataset_v2.json'; a.click();
+};
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input,select,textarea')) return;
+  if (e.key === 'ArrowLeft' && SEL > 0) select(SEL - 1);
+  else if (e.key === 'ArrowRight' && SEL < DATA.items.length - 1) select(SEL + 1);
+  else if (e.key === 'Enter' && SEL >= 0) { const it = DATA.items[SEL]; it.validated = !it.validated; renderDetail(); renderList(); refreshProgress(); }
+});
+load();
+</script>
+</body>
+</html>
