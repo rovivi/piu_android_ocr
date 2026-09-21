@@ -62,25 +62,39 @@ CLS_NAME = {v: k for k, v in CLS.items()}
 
 # Mismos gates que PiuOcr.kt. Si cambian allá tienen que cambiar acá, y el
 # test JVM (ParityTest) es el que lo detecta.
-MIN_SONG_MARGIN = 0.010
+MIN_SONG_MARGIN = 0.001
 MIN_BADGE_CONF = 0.15
-MIN_SCORE_MARGIN = 0.010
+MIN_SCORE_MARGIN = 0.003
 MAX_SONG_BOXES = 5
 MIN_RAW_SIMILARITY = 0.55
 MIN_RAW_SIMILARITY_SHORT = 0.80
 SHORT_NAME = 3
+# Piso de caracteres (normalizado, sin espacios) de un raw para sostener un
+# match, RELATIVO al largo del nombre ganador: floor = min(MIN_RAW_LEN, len(nombre)).
+# 'o-C' -> 'BOCA' era un falso positivo con conf de detector 0.88; 'B3' con raw
+# exacto 'B3' sobrevive porque el piso es relativo. 0 = gate apagado.
+# Ver threshold_sweep.py y ARQUITECTURA §8.
+MIN_RAW_LEN = 4
+# Umbral de confianza del detector para las cajas de título (el conf de
+# "titles" es b.conf del YOLO). 0 = sin filtro, comportamiento de siempre.
+MIN_TITLE_CONF = 0.0
 
 
 def looks_like(raws, name):
     """difflib ratio sobre lo normalizado, sin espacios: el gate `looksLike` de
-    PiuOcr.kt. Un nombre de <= SHORT_NAME caracteres exige casi coincidencia."""
+    PiuOcr.kt. Un nombre de <= SHORT_NAME caracteres exige casi coincidencia.
+    Además un raw más corto que el piso (relativo al largo del nombre) no
+    sostiene el match: 'o-C' -> 'BOCA' era un falso positivo con conf 0.88."""
     n = normalize(name).replace(" ", "")
     if not n:
         return False
+    floor = min(MIN_RAW_LEN, len(n))
     need = MIN_RAW_SIMILARITY_SHORT if len(n) <= SHORT_NAME else MIN_RAW_SIMILARITY
     for raw in raws:
         r = normalize(raw).replace(" ", "")
-        if r and difflib.SequenceMatcher(None, r, n, autojunk=False).ratio() >= need:
+        if not r or len(r) < floor:
+            continue
+        if difflib.SequenceMatcher(None, r, n, autojunk=False).ratio() >= need:
             return True
     return False
 
@@ -170,7 +184,9 @@ def interpret(native, catalog):
     chart = ct_raw if (ct_raw and ct_conf >= MIN_BADGE_CONF) else None
 
     pooled, raws = {}, []
-    for t in native.get("titles", [])[:MAX_SONG_BOXES]:
+    titles = [t for t in native.get("titles", [])
+              if float(t.get("conf", 1.0)) >= MIN_TITLE_CONF][:MAX_SONG_BOXES]
+    for t in titles:
         raw = t.get("raw", "")
         if not raw:
             continue

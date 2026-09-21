@@ -294,6 +294,7 @@ coincidan.
 | `MIN_BADGE_CONF` | 0.15 | 0.15 → 0.873; 0.35 → 0.655 (convierte lecturas buenas en null) |
 | `MIN_RAW_SIMILARITY` | 0.55 | 0.50 → 66 bien/4 mal; 0.55 → 63 bien/2 mal; 0.70 → 50 bien/0 mal |
 | `MIN_RAW_SIMILARITY_SHORT` | 0.80 | un nombre de ≤3 letras ("Bee", "N") exige casi coincidencia |
+| `MIN_RAW_LEN` | 4 | piso de caracteres del raw, relativo al nombre: `min(4, len(nombre))`. `o-C` → "BOCA" era FP con conf 0.88; `B3` con raw exacto sobrevive. Device 63: FP song 4→3; fixture 90 intacto |
 | `SongMatcher.PREFILTER` | 120 | prefiltro por trigramas antes del matching difuso |
 | `MAX_SONG_BOXES` | 5 | fusión de recortes de pantallas 2P (default C++: 3) |
 

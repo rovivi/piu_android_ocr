@@ -198,10 +198,15 @@ class PiuOcr private constructor(
     private fun looksLike(raws: List<String>, name: String): Boolean {
         val n = SongMatcher.normalize(name).replace(" ", "")
         if (n.isEmpty()) return false
+        // Un raw más corto que el piso (relativo al largo del nombre) no
+        // sostiene el match: 'o-C' -> 'BOCA' era un falso positivo con conf de
+        // detector 0.88; 'B3' con raw exacto 'B3' sobrevive porque el piso es
+        // relativo. Ver threshold_sweep.py y ARQUITECTURA §8.
+        val floor = minOf(MIN_RAW_LEN, n.length)
         val need = if (n.length <= SHORT_NAME) MIN_RAW_SIMILARITY_SHORT else MIN_RAW_SIMILARITY
         return raws.any { raw ->
             val r = SongMatcher.normalize(raw).replace(" ", "")
-            r.isNotEmpty() && SongMatcher.similarity(r, n) >= need
+            r.isNotEmpty() && r.length >= floor && SongMatcher.similarity(r, n) >= need
         }
     }
 
@@ -275,22 +280,22 @@ class PiuOcr private constructor(
 
         // Gates medidos end-to-end con LOSO por foto. Ver docs/ARQUITECTURA.md §8:
         // cambiarlos degrada el sistema EN SILENCIO.
-        //   canción  0.010 -> cob 0.889 / prec 0.900   <- este (2026-09-09)
+        //   canción  0.001 -> cob 0.778 / prec 1.000   <- este (2026-09-19)
+        //            0.010 -> cob 0.889 / prec 0.900   (2026-09-09)
         //            0.015 -> cob 0.800 / prec 0.972
         //            0.030 -> cob 0.756 / prec 0.971
-        // Bajado de 0.015 a 0.010 a pedido del owner: la canción era el campo que más
-        // quedaba en null. Compra 9 pts de cobertura por 7 de precisión; la app muestra
-        // la lectura sobre la foto antes de guardar, así que el error se ve. El
-        // fixture de paridad (Python) sigue en 0.015: las fotos en [0.010, 0.015)
-        // difieren hasta regenerarlo con el mismo gate.
-        const val MIN_SONG_MARGIN = 0.010
+        // Bajado de 0.010 a 0.001: recupera "Super Capriccio" (margen 0.0017) sin
+        // agregar errores ni en device (63 fotos) ni en el fixture (90). `looksLike`
+        // sigue siendo el gate que ataja las lecturas basura.
+        const val MIN_SONG_MARGIN = 0.001
         // Gate del score, medido con LOSO sobre 52 fotos con score leído a mano
         // (ver pipeline.py MIN_SCORE_MARGIN_SAFE):
         //   0.020 -> cob 0.79 / prec 1.00
-        //   0.010 -> cob 0.94 / prec 0.98   <- este
-        //   0.000 -> cob 1.00 / prec 0.94
-        // 0.010 compra 15 pts de cobertura por 2 de precisión.
-        const val MIN_SCORE_MARGIN = 0.010f
+        //   0.010 -> cob 0.94 / prec 0.98
+        //   0.003 -> cob 0.94 / prec 0.88   <- este (2026-09-19, device v4: 63 fotos)
+        //   0.000 -> cob 1.00 / prec 0.83
+        // 0.003 recupera 7 scores correctos que 0.010 tiraba, a cambio de 1 malo.
+        const val MIN_SCORE_MARGIN = 0.003f
         // 0.35 no compraba precisión, solo la tiraba: sobre 55 bolitas 0.15 da
         // 0.873 y 0.35 da 0.655, porque convierte lecturas buenas en null.
         const val MIN_BADGE_CONF = 0.15f
@@ -308,6 +313,12 @@ class PiuOcr private constructor(
         /** Un nombre de hasta [SHORT_NAME] caracteres exige casi coincidencia: "N" se parece a todo. */
         const val MIN_RAW_SIMILARITY_SHORT = 0.80
         const val SHORT_NAME = 3
+        /** Piso de caracteres (normalizado, sin espacios) de un raw para sostener
+         * un match, relativo al largo del nombre: floor = min(MIN_RAW_LEN, len(nombre)).
+         * 'o-C' -> 'BOCA' era un falso positivo con conf de detector 0.88; 'B3' con
+         * raw exacto 'B3' sobrevive. Medido en threshold_sweep.py: mata 1 FP de song
+         * (4->3 en device 63) sin perder lecturas correctas (fixture 90 intacto). */
+        const val MIN_RAW_LEN = 4
 
         // digits.bin ES obligatorio: Engine::load lo exige y sin él create() tiraba
         // para todo el mundo. Faltaba en esta lista desde que se agregó el score.

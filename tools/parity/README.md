@@ -18,6 +18,10 @@ tools/parity/device.sh                                # el .so arm64 real, por a
 
 Piezas:
 
+- `threshold_sweep.py` — barrido de umbrales (gates) del `interpret()` sobre el
+  JSON real del device + GT validado, con reporte de falsos positivos. No hace
+  inferencia: funciones puras del JSON + catálogo.
+
 | qué | dónde |
 |---|---|
 | binario de host (`piuocr_cli`) | `tools/host/` → `build_host/piuocr_cli` |

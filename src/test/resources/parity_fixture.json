@@ -463,7 +463,7 @@
     "score": 941655
    },
    "expected": {
-    "song": null,
+    "song": "Anguished Unmaking",
     "level": 22,
     "chart_type": "double",
     "score": 941655,
@@ -603,7 +603,7 @@
     "song": null,
     "level": 21,
     "chart_type": "single",
-    "score": null,
+    "score": 228143,
     "raw": "BEsnNEP | \"Rs | So5"
    }
   },
@@ -3056,7 +3056,7 @@
     "song": "Rise Up (feat. Miori Celesta)",
     "level": 22,
     "chart_type": "single",
-    "score": null,
+    "score": 90000,
     "raw": "MioriCeSesta | P!BUa | O!,[\"4U?"
    }
   },
@@ -3461,7 +3461,7 @@
     "song": null,
     "level": 12,
     "chart_type": "halfdouble",
-    "score": null,
+    "score": 228143,
     "raw": "PieeHk | Z\"mz | mEGIlU"
    }
   },
@@ -3497,7 +3497,7 @@
     "score": 991450
    },
    "expected": {
-    "song": null,
+    "song": "Extreme Music School 2nd period feat. Nanahira",
     "level": null,
     "chart_type": "halfdouble",
     "score": 991450,
@@ -4063,7 +4063,7 @@
     "song": "We Love Your Step",
     "level": 22,
     "chart_type": "single",
-    "score": null,
+    "score": 972340,
     "raw": "thcLoveYourSteP | \"'Q'\"'w | t)cUoveYourSteP"
    }
   },
