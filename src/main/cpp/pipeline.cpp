@@ -308,6 +308,10 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
     if (b.cls == 1 && (!screenBox || b.conf > screenBox->conf)) screenBox = &b;
 
   js << "],\"w\":" << img.cols << ",\"h\":" << img.rows;
+  // Grados que se giró `work` para leer (0/90/270). Las cajas ya vienen en
+  // coordenadas de la foto original; esto es para que la app pueda mostrar la
+  // pantalla derecha en la animación.
+  js << ",\"turned_by\":" << (turn == 1 ? 90 : turn == 2 ? 270 : 0);
   js << ",\"screen_box\":";
   if (screenBox) putBox(js, mb(*screenBox), img.cols, img.rows); else js << "null";
   js << ",\"score_box\":";

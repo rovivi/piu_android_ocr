@@ -45,6 +45,12 @@ data class Reading(
     val rankBox: Box? = null,
     /** La pantalla de resultado entera (fullscore): adonde la app acerca la foto antes de mostrar. */
     val screenBox: Box? = null,
+    /**
+     * Grados que el módulo giró la foto para leerla (0, 90 o 270), cuando la pantalla estaba de
+     * costado y el detector no la veía. Las cajas YA vienen en coordenadas de la foto original:
+     * esto es para que la app muestre la pantalla derecha en la animación, sin re-mapear nada.
+     */
+    val turnedBy: Int = 0,
 ) {
     val needsLlm: List<String> get() = buildList {
         if (song.reason != null || song.value == null) add("song")
@@ -189,6 +195,7 @@ class PiuOcr private constructor(
             badgeBox = j.optBox("badge_box"),
             rankBox = j.optBox("rank_box"),
             screenBox = j.optBox("screen_box"),
+            turnedBy = j.optInt("turned_by", 0),
         )
     }
 

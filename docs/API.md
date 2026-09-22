@@ -113,6 +113,7 @@ data class Reading(
     val badgeBox: Box? = null,
     val rankBox: Box? = null,
     val screenBox: Box? = null,
+    val turnedBy: Int = 0,
 ) {
     val needsLlm: List<String>
     val needsVlmCall: Boolean
@@ -165,6 +166,12 @@ de la imagen y sirven **solo para dibujar** sobre la foto (la app anima dónde
 vio cada cosa). `screenBox` es la pantalla de resultado entera: el lugar adonde
 conviene acercar la foto. Ningún gate las usa. `imageWidth`/`imageHeight` son 0
 si el `.so` no los informó, para normalizar las cajas.
+
+`turnedBy` son los grados que el módulo giró la foto para leerla (0, 90 o 270),
+cuando la pantalla estaba de costado y el detector no la veía. Las cajas **ya
+vienen en coordenadas de la foto original**, así que `turnedBy` es solo para que
+la app muestre la pantalla derecha en la animación (rotando foto y cajas
+juntas), sin re-mapear nada.
 
 ## `SongMatcher`
 
