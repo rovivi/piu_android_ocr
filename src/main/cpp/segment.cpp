@@ -123,8 +123,17 @@ static void forceN(const cv::Mat& m, std::vector<cv::Rect>* boxes, int wantN) {
 
 std::vector<Glyph> segmentBadge(const cv::Mat& roi, int wantN) {
   if (roi.empty()) return {};
+  // El badge real mide ~100 px; 6x sobre un primer plano (el usuario recorta
+  // la bolita) pedía cientos de MB y el proceso moría. Tope al lado escalado:
+  // la caja más grande medida en device (553 px → 3318) no se toca, y el
+  // glifo se normaliza a 24x32 igual, así que arriba de eso no hay calidad
+  // extra que perder. ponytail: tope simple; si el dataset crece a 4K, medir.
+  constexpr int BADGE_MAX_SIDE = 4096;
+  const int longest = std::max(roi.rows, roi.cols);
+  const float bscale = std::min(float(BADGE_SCALE),
+                                float(BADGE_MAX_SIDE) / float(std::max(longest, 1)));
   cv::Mat big, hsv;
-  cv::resize(roi, big, cv::Size(), BADGE_SCALE, BADGE_SCALE, cv::INTER_CUBIC);
+  cv::resize(roi, big, cv::Size(), bscale, bscale, cv::INTER_CUBIC);
   cv::cvtColor(big, hsv, cv::COLOR_BGR2HSV);
   std::vector<cv::Mat> ch;
   cv::split(hsv, ch);

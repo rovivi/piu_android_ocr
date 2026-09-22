@@ -3,14 +3,14 @@
 [![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white)](#requisitos)
 [![minSdk](https://img.shields.io/badge/minSdk-24-2496ED)](#requisitos)
 [![ABIs](https://img.shields.io/badge/ABIs-arm64--v8a_%7C_armeabi--v7a_%7C_x86_%7C_x86__64-informational)](docs/ARQUITECTURA.md#3-el-aar-por-dentro)
-[![AAR](https://img.shields.io/badge/AAR-~22_MB-blueviolet)](docs/ARQUITECTURA.md#3-el-aar-por-dentro)
+[![AAR](https://img.shields.io/badge/AAR-~34_MB-blueviolet)](docs/ARQUITECTURA.md#3-el-aar-por-dentro)
 [![On-device](https://img.shields.io/badge/on--device-sin_LLM-success)](#qué-es)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-7F52FF?logo=kotlin&logoColor=white)](#estructura)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](#estructura)
 
 Lectura de pantallas de resultado de **Pump It Up** en el teléfono, **sin LLM**:
 detector YOLO en NCNN + OCR clásico en C++ + matching difuso contra el catálogo
-de 675 canciones en Kotlin. Se consume como un AAR de ~22 MB con las cuatro ABIs
+de 675 canciones en Kotlin. Se consume como un AAR de ~34 MB con las cuatro ABIs
 y sin dependencias transitivas. Los campos en los que no se confía se marcan
 para que la app los escale a un VLM.
 

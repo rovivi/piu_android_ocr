@@ -223,8 +223,20 @@ std::vector<Glyph> segmentDigits(const cv::Mat& roi, const Templates& digits,
   if (roi.empty()) return {};
   cv::Mat gray;
   if (roi.channels() == 3) cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY); else gray = roi;
-  if (scale != 1)
-    cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_CUBIC);
+  if (scale != 1) {
+    // 4x sobre una caja de primer plano (miles de px) multiplicaba cada
+    // umbralizado intermedio hasta pedir GB y matar el proceso. La caja más
+    // grande medida en device (1409x730 → 16.5 Mpx escalados) no se toca; el
+    // tope solo recorta el caso patológico, donde el glifo ya es enorme.
+    // ponytail: tope de área; si el dataset crece a 4K, medir contra 20e6.
+    constexpr double MAX_SCALED_AREA = 20e6;
+    const double area = double(gray.rows) * double(gray.cols);
+    int s = scale;
+    if (area > 0 && area * double(s) * s > MAX_SCALED_AREA)
+      s = std::max(1, int(std::sqrt(MAX_SCALED_AREA / area)));
+    if (s != 1)
+      cv::resize(gray, gray, cv::Size(), s, s, cv::INTER_CUBIC);
+  }
 
   // Un umbral global único falla en pantallas de fondo claro: se barren varios
   // y gana el que produce el conjunto de glifos más plausible. Otsu y su

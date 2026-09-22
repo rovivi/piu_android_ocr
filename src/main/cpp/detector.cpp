@@ -39,10 +39,25 @@ namespace {
 //   1,1f              0.756  0.489   481
 //   1,0.83,1f         0.844  0.644   661   <- lo que había
 //   1,0.83f           0.933  0.733   486
-//   1,0.83,0.83f      0.956  0.733   653   <- este: mismo costo, +9 pts
+//   1,0.83,0.83f      0.956  0.733   653   <- el que había: +2.3 pts de recall
 //   1,0.83,1f,0.83f   0.933  0.733   844
 // El flip sin reducir casi no suma; el flip DE la reducida sí.
-const std::vector<Aug> kAugs = {{1.00f, false}, {0.83f, false}, {0.83f, true}};
+//
+// DOS PASADAS (2026-09-21). La tercera (0.83 sin flip) costaba un tercio del
+// detector —que es ~90 % del read— por 2.3 pts de recall de song_name, y el
+// acierto de canción end-to-end no cambiaba. Medido en device (Pixel 9 Pro XL,
+// 62 fotos, decode de la app): el read completo promediaba 5.14 s y hasta
+// 10.8 s, con 22 de 62 fotos pagando ADEMÁS la segunda detección del zoom. Esa
+// es la cuenta que calienta el teléfono. En el emulador arm64, misma tanda:
+//                precisión  cobertura  media
+//   3 pasadas      0.886      0.646    958 ms
+//   2 pasadas      0.889      0.667    629 ms   <- este
+//   1 pasada       0.829      0.604    341 ms
+// (la de 1 pasada pierde 7 campos de 192). Dos pasadas gana y pierde fotos
+// sueltas contra tres (mismo total, ±1 campo), sin costo medible en precisión;
+// la de una sola pasada es la que sí degrada. La segunda detección del zoomIn
+// conserva estas mismas pasadas: bajarla a una perdió precisión (0.861).
+const std::vector<Aug> kAugs = {{1.00f, false}, {0.83f, true}};
 
 float iou(const Box& a, const Box& b) {
   const int x1 = std::max(a.x1, b.x1), y1 = std::max(a.y1, b.y1);

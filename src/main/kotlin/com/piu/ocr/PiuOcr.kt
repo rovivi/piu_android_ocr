@@ -64,21 +64,28 @@ class PiuOcr private constructor(
 
     @Volatile private var handle = handle
 
-    fun read(bitmap: Bitmap): Reading {
-        check(handle != 0L) { "PiuOcr ya está cerrado" }
-        // El .so solo lee ARGB_8888 con píxeles bloqueables. Un HARDWARE bitmap
-        // (lo que devuelve ImageDecoder por defecto en API 28+) o un RGB_565
-        // fallaban en lockPixels y volvían vacíos en silencio.
-        return interpret(readRaw(bitmap), matcher)
-    }
+    fun read(bitmap: Bitmap): Reading = interpret(readRaw(bitmap), matcher)
 
     /** JSON crudo del .so. Lo usa el test en device (tools/parity/device.sh)
      *  para comparar contra el CLI de host foto por foto. */
     internal fun readRaw(bitmap: Bitmap): String {
-        check(handle != 0L) { "PiuOcr ya está cerrado" }
+        // El .so solo lee ARGB_8888 con píxeles bloqueables. Un HARDWARE bitmap
+        // (lo que devuelve ImageDecoder por defecto en API 28+) o un RGB_565
+        // fallaban en lockPixels y volvían vacíos en silencio.
         val bmp = if (bitmap.config == Bitmap.Config.ARGB_8888 && !isHardware(bitmap)) bitmap
                   else bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        return nativeRead(handle, bmp)
+        try {
+            // Mismo lock que close(): sin esto, cerrar en otro hilo entre el
+            // check y nativeRead era use-after-free en el .so.
+            return synchronized(this) {
+                check(handle != 0L) { "PiuOcr ya está cerrado" }
+                nativeRead(handle, bmp)
+            }
+        } finally {
+            // La copia es nuestra: esperar al GC eran ~12 MB por lectura de un
+            // bitmap HARDWARE.
+            if (bmp !== bitmap) bmp?.recycle()
+        }
     }
 
     /**
@@ -93,8 +100,10 @@ class PiuOcr private constructor(
         titleVariants: Int = 1,
         titleBoxes: Int = DEFAULT_TITLE_BOXES,
     ) {
-        check(handle != 0L) { "PiuOcr ya está cerrado" }
-        nativeSetOptions(handle, rectify, binMode, badgeMode, titleVariants, titleBoxes)
+        synchronized(this) {
+            check(handle != 0L) { "PiuOcr ya está cerrado" }
+            nativeSetOptions(handle, rectify, binMode, badgeMode, titleVariants, titleBoxes)
+        }
     }
 
     /** Idempotente: un segundo close() era un double free en el .so. */
@@ -335,7 +344,10 @@ class PiuOcr private constructor(
          * los viejos. Y cada archivo se escribe a `.tmp` y se renombra, para que
          * un crash a mitad de copia no deje un `.bin` truncado que "existe".
          */
+        /** Sincronizado: dos create() a la vez copiaban los assets a los
+         *  mismos `.tmp` y podían dejar un modelo truncado que "existe". */
         @JvmStatic
+        @Synchronized
         fun create(context: Context): PiuOcr {
             val dir = File(context.filesDir, "piu_ocr").apply { mkdirs() }
             val stamp = File(dir, ".version")

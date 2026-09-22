@@ -55,8 +55,10 @@ Java_com_piu_ocr_PiuOcr_nativeCreate(JNIEnv* env, jclass, jstring dir) {
   const std::string base(d);
   env->ReleaseStringUTFChars(dir, d);
 
-  auto* c = new Engine();
+  Engine* c = nullptr;
+  // `new` también adentro: un bad_alloc acá cruzaba JNI y abortaba el proceso.
   try {
+    c = new Engine();
     if (!c->load(base)) {
       LOGE("nativeCreate: fallo cargando assets en %s", base.c_str());
       delete c;
@@ -101,10 +103,12 @@ Java_com_piu_ocr_PiuOcr_nativeSetOptions(JNIEnv*, jclass, jlong h, jboolean rect
 JNIEXPORT jstring JNICALL
 Java_com_piu_ocr_PiuOcr_nativeRead(JNIEnv* env, jclass, jlong h, jobject bmp) {
   auto* c = reinterpret_cast<Engine*>(h);
-  cv::Mat img;
-  if (!c || !bitmapToMat(env, bmp, &img)) return env->NewStringUTF(Engine::emptyJson());
-  // Una cv::Exception que cruza la frontera JNI aborta el proceso entero.
+  // Una cv::Exception que cruza la frontera JNI aborta el proceso entero. La
+  // conversión del Bitmap va adentro del try: cvtColor puede tirar con un
+  // bitmap degenerado y ese throw también cruzaba.
   try {
+    cv::Mat img;
+    if (!c || !bitmapToMat(env, bmp, &img)) return env->NewStringUTF(Engine::emptyJson());
     return env->NewStringUTF(c->read(img).c_str());
   } catch (const std::exception& e) {
     LOGE("nativeRead: %s", e.what());

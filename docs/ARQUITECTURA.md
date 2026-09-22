@@ -85,19 +85,20 @@ corre `Engine::read` y devuelve JSON.
 
 ## 3. El AAR por dentro
 
-Medido sobre `build/outputs/aar/piu-ocr-release.aar` (**~22 MB**, cuatro ABIs):
+Medido sobre `build/outputs/aar/piu-ocr-release.aar` (**~34 MB**, cuatro ABIs,
+con el detector v4):
 
 ```
-piu-ocr-release.aar                          21.9 MB
+piu-ocr-release.aar                          33.9 MB
 ├── classes.jar                              0.04 MB   API Kotlin + SongMatcher
 ├── jni/
-│   ├── arm64-v8a/libpiuocr.so               7.6 MB
-│   ├── armeabi-v7a/libpiuocr.so             4.0 MB
-│   ├── x86/libpiuocr.so                    12.9 MB
-│   └── x86_64/libpiuocr.so                 14.1 MB
+│   ├── arm64-v8a/libpiuocr.so               8.0 MB
+│   ├── armeabi-v7a/libpiuocr.so             4.3 MB
+│   ├── x86/libpiuocr.so                    13.2 MB
+│   └── x86_64/libpiuocr.so                 14.8 MB
 └── assets/piu_ocr/
-    ├── piu_yolo.bin                         6.43 MB   detector NCNN fp16
-    ├── chars.bin                            1.81 MB   ~2.3 K plantillas int8
+    ├── piu_yolo.bin                        18.5 MB   detector NCNN fp16 (yolo26_v4)
+    ├── chars.bin                            1.73 MB   ~2.3 K plantillas int8
     ├── digits.bin                           0.23 MB   296 ejemplares de score
     ├── level.bin                            0.12 MB   plantillas de nivel
     └── catalog.json                         0.08 MB   675 canciones + charts
@@ -342,7 +343,7 @@ export ANDROID_HOME=~/Android/Sdk
 
 El `.so` se compila con `-O3 -ffast-math -fexceptions -fvisibility=hidden
 --gc-sections --exclude-libs,ALL`: exporta solo los tres `Java_*` y así
-`libpiuocr.so` arm64 queda en **7.6 MB** (contra 12.8 MB con símbolos de debug).
+`libpiuocr.so` arm64 queda en **8.0 MB** (contra ~13 MB con símbolos de debug).
 
 ## 11. Problemas conocidos
 
@@ -375,9 +376,9 @@ módulo sigue funcionando embebido normal y no obliga a depender de Play Core.
 
 | | medido | criterio del plan |
 |---|---|---|
-| tamaño de assets | ~8.7 MB (con el detector) | < 15 MB ✔ |
-| latencia OCR | 674 ms media, 785 ms máx (host, 3 pasadas) | < 100 ms ✖ |
-| `libpiuocr.so` arm64 | 7.6 MB | — |
+| tamaño de assets | ~20.6 MB (detector v4: 18.5 MB) | < 15 MB ✖ (el v4 lo pasó) |
+| latencia OCR | host ~910 ms; emulador v4: 863 media, 1604 máx (3 pasadas) | < 100 ms ✖ |
+| `libpiuocr.so` arm64 | 8.0 MB | — |
 
 El detector es el ~90 % del tiempo y el TTA es 3× de eso. Las palancas reales,
 en orden: cuantización int8 **real** (`ncnn2int8`, ≥300 imágenes de calibración),
