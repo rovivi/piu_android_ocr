@@ -124,6 +124,27 @@ std::vector<Box> Engine::zoomTinyTitles(const cv::Mat& work,
   return boxes;
 }
 
+namespace {
+// ¿El detector marcó la pantalla entera (fullscore)? Es la señal de que la
+// pantalla se ve derecha; si falta, la foto puede estar girada 90°.
+bool hasScreen(const std::vector<Box>& boxes) {
+  for (const Box& b : boxes)
+    if (b.cls == 1) return true;
+  return false;
+}
+
+// Cuánto ve una orientación: la pantalla (fullscore) manda — vale 100 — y si
+// no, pesan las clases presentes y la confianza de la mejor caja de cada una.
+float orientationScore(const std::vector<Box>& boxes) {
+  float top[5] = {0, 0, 0, 0, 0};
+  for (const Box& b : boxes)
+    if (b.cls >= 0 && b.cls < 5 && b.conf > top[b.cls]) top[b.cls] = b.conf;
+  float s = 0.f;
+  for (float c : top) if (c > 0) s += 1.f + c;
+  return top[1] > 0 ? 100.f + s : s;
+}
+}  // namespace
+
 std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
                          std::vector<Box>* usedBoxes) const {
   // imgsz 1280 con TTA: es la única configuración que da cajas usables. Bajar a
@@ -137,17 +158,44 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   cv::Mat work = img;
   cv::Mat Hinv;              // warp -> foto; vacío = identidad
   std::vector<Box> boxes;
+  // Giro aplicado a `work` para enderezar una foto girada: 0 = original,
+  // 1 = 90° horario, 2 = 90° antihorario. Las cajas del JSON y las de
+  // `usedBoxes` vuelven a coordenadas de la foto con `turnBack`.
+  int turn = 0;
   if (given) {
     boxes = *given;
   } else {
-    const std::vector<Box> first = det_.detect(img, 1280, augs);
+    std::vector<Box> first = det_.detect(img, 1280, augs);
+    // Fallback de rotación: si el detector NO vio la pantalla (fullscore), la
+    // foto puede estar girada 90° — una foto vertical de una pantalla
+    // horizontal, que es lo que ni el detector ni el OCR entienden. Se prueban
+    // los dos cuartos de vuelta que faltan, se sigue con la orientación que más
+    // ve (fullscore primero) y, si ninguna de las 3 ve nada, no hay lectura.
+    // Cuesta dos detecciones extra, y solo en ese caso: con fullscore no corre.
+    if (!hasScreen(first)) {
+      float bestScore = orientationScore(first);
+      for (int t = 1; t <= 2; ++t) {
+        cv::Mat rot;
+        cv::rotate(img, rot, t == 1 ? cv::ROTATE_90_CLOCKWISE
+                                    : cv::ROTATE_90_COUNTERCLOCKWISE);
+        std::vector<Box> rb = det_.detect(rot, 1280, augs);
+        const float sc = orientationScore(rb);
+        if (sc > bestScore) {
+          bestScore = sc;
+          first = std::move(rb);
+          work = rot;
+          turn = t;
+        }
+      }
+      if (first.empty()) return emptyJson();
+    }
     bool rectified = false;
     if (opts.rectify) {
       const Box* screen = nullptr;
       for (const Box& b : first)
         if (b.cls == 1 && (!screen || b.conf > screen->conf)) screen = &b;
       if (screen) {
-        Rectify r = rectifyScreen(img, *screen);
+        Rectify r = rectifyScreen(work, *screen);
         if (r.ok) { work = r.warp; Hinv = r.Hinv; rectified = true; }
       }
     }
@@ -155,10 +203,12 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
       boxes = det_.detect(work, 1280, augs);
       boxes = zoomTinyTitles(work, boxes);
     } else {
-      boxes = zoomIn(img, first);
+      boxes = zoomIn(work, first);
     }
   }
-  auto mb = [&](const Box& b) { return mapBoxBack(Hinv, b); };
+  auto mb = [&](const Box& b) {
+    return turnBack(mapBoxBack(Hinv, b), turn, img.cols, img.rows);
+  };
   if (usedBoxes) {
     std::vector<Box> mapped;
     mapped.reserve(boxes.size());

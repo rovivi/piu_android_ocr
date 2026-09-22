@@ -25,6 +25,17 @@ constexpr int   BADGE_S_MAX = 90, BADGE_V_MIN = 150, BADGE_SCALE = 6;
 
 struct Box { int x1, y1, x2, y2; float conf; int cls = -1; };
 
+// Vuelve una caja de la imagen girada a coordenadas de la foto original (WxH).
+// `turn`: 1 = 90° horario (cv::ROTATE_90_CLOCKWISE), 2 = 90° antihorario. Con
+// el giro horario un píxel (x,y) termina en (H-1-y, x); con el antihorario, en
+// (y, W-1-x). Es la inversa del giro, así que las cajas vuelven a la foto y la
+// app dibuja el overlay donde corresponde. Chequeo: tools/host/turn_back_test.cpp
+inline Box turnBack(const Box& b, int turn, int W, int H) {
+  if (turn == 1) return Box{b.y1, H - b.x2, b.y2, H - b.x1, b.conf, b.cls};
+  if (turn == 2) return Box{W - b.y2, b.x1, W - b.y1, b.x2, b.conf, b.cls};
+  return b;
+}
+
 // Modos de binarización del OCR clásico (F2). Legacy es EXACTAMENTE el camino
 // de siempre; Clahe/Adaptive agregan candidatos y All corre todos y elige el
 // mejor por el mismo puntaje de coherencia. Default Legacy ⇒ el resultado no
