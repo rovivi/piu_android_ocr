@@ -46,7 +46,7 @@ ROOT = os.path.dirname(PIU_OCR)                    # python_projects/
 D2 = os.path.join(PIU_OCR, "dataset_v2")
 PHOTOS = os.path.join(PIU_OCR, "DATASET")
 MOBILE = os.path.join(PIU_OCR, "build_mobile")
-ASSETS = os.path.join(ANDROID, "src", "main", "assets", "piu_ocr")
+ASSETS = os.environ.get("PIU_ASSETS") or os.path.join(ANDROID, "src", "main", "assets", "piu_ocr")
 CLI = os.path.join(ANDROID, "build_host", "piuocr_cli")
 FIXTURE = os.path.join(ANDROID, "src", "test", "resources", "parity_fixture.json")
 FIXTURE_NOTE = (
@@ -64,7 +64,8 @@ CLS_NAME = {v: k for k, v in CLS.items()}
 # test JVM (ParityTest) es el que lo detecta.
 MIN_SONG_MARGIN = 0.001
 MIN_BADGE_CONF = 0.15
-MIN_SCORE_MARGIN = 0.003
+MIN_SCORE_MARGIN = 0.010
+MIN_SCORE_AGREE_MARGIN = 0.0     # = PiuOcr.MIN_SCORE_AGREE_MARGIN
 MAX_SONG_BOXES = 5
 MIN_RAW_SIMILARITY = 0.55
 MIN_RAW_SIMILARITY_SHORT = 0.80
@@ -215,10 +216,12 @@ def interpret(native, catalog):
     level = None
     sc = native.get("level_scores") or []
     if sc:
+        # La bolita dibuja siempre dos dígitos ("04"), así que un nivel legal de un dígito se
+        # compara con cero a la izquierda. Antes se filtraba por longitud y un 4 nunca podía ganar.
         legal = [l for l in (catalog.levels_for(song, chart) if song else [])
-                 if len(str(l)) == len(sc)]
+                 if len(str(l)) <= len(sc)]
         if legal:
-            scored = sorted(((sum(sc[i][int(ch)] for i, ch in enumerate(str(cand))), cand)
+            scored = sorted(((sum(sc[i][int(ch)] for i, ch in enumerate(str(cand).zfill(len(sc)))), cand)
                              for cand in legal), reverse=True)
             level = scored[0][1]
         else:
@@ -229,7 +232,10 @@ def interpret(native, catalog):
             except ValueError:
                 level = None
     sv = native.get("score", -1)
-    score = sv if (sv >= 0 and float(native.get("score_margin", 0.0)) >= MIN_SCORE_MARGIN) else None
+    sm = float(native.get("score_margin", 0.0))
+    agree = native.get("score2", -2) == sv
+    score = sv if (sv >= 0 and (sm >= MIN_SCORE_MARGIN
+                                or (agree and sm >= MIN_SCORE_AGREE_MARGIN))) else None
 
     return {"song": song, "level": level, "chart_type": chart, "score": score,
             "raw": " | ".join(raws), "song_margin": round(margin, 4),

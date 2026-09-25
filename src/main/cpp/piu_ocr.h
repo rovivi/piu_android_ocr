@@ -82,11 +82,16 @@ class Detector {
   bool load(const std::string& param, const std::string& bin);
   // Corre una pasada por Aug y las une con NMS. Sin TTA se pierde un tercio
   // de los song_name (43 -> 29 de 58, medido); ncnn no lo trae, va a mano.
-  std::vector<Box> detect(const cv::Mat& bgr, int imgsz = 1280,
+  // imgsz <= 0 → el tamaño de entrada del modelo cargado (ver imgsz()).
+  std::vector<Box> detect(const cv::Mat& bgr, int imgsz = 0,
                           const std::vector<Aug>& augs = defaultAugs()) const;
+  // Lado del lienzo con el que se exportó el modelo. El export a NCNN es de forma fija, así
+  // que se deduce del .param al cargar (cantidad de anchors) en vez de fijarlo en el código.
+  int imgsz() const { return imgsz_; }
  private:
   std::vector<Box> detectOnce(const cv::Mat&, int, float, bool) const;
   ncnn::Net* net_ = nullptr;
+  int imgsz_ = 1280;
 };
 
 // --- segment.cpp -------------------------------------------------------
@@ -117,6 +122,21 @@ cv::Mat deskewBand(const cv::Mat& roi, float maxDeg = 5.f);
 bool classifyChartType(const cv::Mat& roi, std::string* out, float* conf,
                        BadgeMode mode = BadgeMode::Color,
                        const class Templates* chars = nullptr);
+
+// Banco del kNN de tipo de chart (chart_knn.bin, de piu_ocr/build_chart_knn.py).
+// Rasgo por bolita: histograma de tono de 18 bins + S y V medios de los píxeles saturados del
+// disco inscripto. Clases por índice, en orden alfabético (ver kChartClasses en badge.cpp).
+struct ChartBank {
+  std::vector<float> X;   // n × dim
+  std::vector<int> y;     // n
+  int dim = 0;
+  bool empty() const { return y.empty(); }
+  static ChartBank load(const std::string& path);
+};
+// kNN (k vecinos, L1). conf = fracción de votos del ganador; devuelve false (sin tipo) si no hay
+// suficientes píxeles saturados o si el ganador no llega a minVotes.
+bool classifyChartTypeKnn(const cv::Mat& roi, const ChartBank& bank, std::string* out,
+                          float* conf, int k = 5, float minVotes = 0.6f);
 
 // --- recognize.cpp -----------------------------------------------------
 // Etiqueta de plantilla -> dígito 0..9, o -1. level.bin trae code points.
@@ -178,6 +198,7 @@ class Engine {
   Options opts;                              // default == comportamiento actual
  private:
   Templates chars_, level_, digits_;
+  ChartBank chart_;
   Detector det_;
   // Segunda detección dentro de la pantalla (fullscore) cuando ocupa poco del
   // encuadre: una foto lejana. Devuelve cajas en coordenadas de la imagen.

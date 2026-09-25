@@ -45,6 +45,7 @@ bool Engine::load(const std::string& base) {
   chars_ = Templates::load(base + "/chars.bin");
   level_ = Templates::load(base + "/level.bin");
   digits_ = Templates::load(base + "/digits.bin");
+  chart_ = ChartBank::load(base + "/chart_knn.bin");   // opcional: sin él, rangos de tono
   return !chars_.empty() && !level_.empty() && !digits_.empty() &&
          det_.load(base + "/piu_yolo.param", base + "/piu_yolo.bin");
 }
@@ -82,7 +83,7 @@ std::vector<Box> Engine::zoomIn(const cv::Mat& img, std::vector<Box> first) cons
   if (x2 - x1 < ZOOM_MIN_SIDE || y2 - y1 < ZOOM_MIN_SIDE) return first;
 
   cv::Mat crop = img(cv::Rect(x1, y1, x2 - x1, y2 - y1)).clone();
-  std::vector<Box> second = det_.detect(crop, 1280, augs);
+  std::vector<Box> second = det_.detect(crop, det_.imgsz(), augs);
   for (Box& b : second) { b.x1 += x1; b.x2 += x1; b.y1 += y1; b.y2 += y1; }
 
   // Lo que la segunda pasada vio manda; lo que no vio se conserva de la primera.
@@ -112,7 +113,7 @@ std::vector<Box> Engine::zoomTinyTitles(const cv::Mat& work,
     const int y2 = std::min(H, b.y2 + int(bh * 1.0f));
     if (x2 - x1 < 20 || y2 - y1 < 12) continue;
     cv::Mat crop = work(cv::Rect(x1, y1, x2 - x1, y2 - y1)).clone();
-    std::vector<Box> sec = det_.detect(crop, 1280, augs);
+    std::vector<Box> sec = det_.detect(crop, det_.imgsz(), augs);
     const Box* best = nullptr;
     for (const Box& s : sec)
       if (s.cls == 4 && (!best || s.conf > best->conf)) best = &s;
@@ -165,7 +166,7 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   if (given) {
     boxes = *given;
   } else {
-    std::vector<Box> first = det_.detect(img, 1280, augs);
+    std::vector<Box> first = det_.detect(img, det_.imgsz(), augs);
     // Fallback de rotación: si el detector NO vio la pantalla (fullscore), la
     // foto puede estar girada 90° — una foto vertical de una pantalla
     // horizontal, que es lo que ni el detector ni el OCR entienden. Se prueban
@@ -178,7 +179,7 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
         cv::Mat rot;
         cv::rotate(img, rot, t == 1 ? cv::ROTATE_90_CLOCKWISE
                                     : cv::ROTATE_90_COUNTERCLOCKWISE);
-        std::vector<Box> rb = det_.detect(rot, 1280, augs);
+        std::vector<Box> rb = det_.detect(rot, det_.imgsz(), augs);
         const float sc = orientationScore(rb);
         if (sc > bestScore) {
           bestScore = sc;
@@ -200,7 +201,7 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
       }
     }
     if (rectified) {
-      boxes = det_.detect(work, 1280, augs);
+      boxes = det_.detect(work, det_.imgsz(), augs);
       boxes = zoomTinyTitles(work, boxes);
     } else {
       boxes = zoomIn(work, first);
@@ -271,8 +272,10 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   if (diff) {
     // pad +0.02: medido sobre 55 bolitas, -0.02 da 0.855 y +0.02 da 0.873.
     std::string t; float cf = 0.f;
-    if (classifyChartType(cropBox(work, *diff, 0.02f), &t, &cf, opts.badgeMode,
-                          &chars_)) {
+    const cv::Mat broi = cropBox(work, *diff, 0.02f);
+    if (!chart_.empty()) {
+      if (classifyChartTypeKnn(broi, chart_, &t, &cf)) { chartType = t; chartConf = cf; }
+    } else if (classifyChartType(broi, &t, &cf, opts.badgeMode, &chars_)) {
       chartType = t; chartConf = cf;
     }
     auto gs = segmentBadge(cropBox(work, *diff, -0.02f), 2);
@@ -292,9 +295,19 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   int scoreVal = -1;
   float scoreMargin = 0.f;
   std::string scoreDigits;
-  if (scoreBox)
+  // Segunda lectura sin el 15 % superior de la caja (el rótulo "SCORE"): si coincide con la
+  // primera, Kotlin acepta aunque el margen por dígito sea bajo. Puerto de SCORE_AGREE_TRIM en
+  // pipeline.py: en 115 scores con GT, 0.809 → 0.870 bien, errores aceptados 3.5 → 4.3 %.
+  int score2Val = -1;
+  float score2Margin = 0.f;
+  if (scoreBox) {
     readScore(cropBox(work, *scoreBox, 0.06f), digits_, &scoreVal, &scoreMargin,
               &scoreDigits, opts.binMode);
+    Box b2 = *scoreBox;
+    b2.y1 += int(0.15f * (b2.y2 - b2.y1));
+    std::string d2;
+    readScore(cropBox(work, b2, 0.06f), digits_, &score2Val, &score2Margin, &d2, opts.binMode);
+  }
 
   // rank: no se lee, pero es una de las cosas que la pantalla muestra y la
   // app la señala al animar la lectura.
@@ -322,6 +335,7 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
   if (rankBox) putBox(js, mb(*rankBox), img.cols, img.rows); else js << "null";
 
   js << ",\"score\":" << scoreVal << ",\"score_margin\":" << scoreMargin
+     << ",\"score2\":" << score2Val << ",\"score2_margin\":" << score2Margin
      << ",\"score_digits\":\"" << esc(scoreDigits) << "\"";
   js << ",\"chart_type\":\"" << esc(chartType) << "\",\"chart_conf\":"
      << chartConf << ",\"level_digits\":[";

@@ -5,6 +5,8 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -119,6 +121,97 @@ bool classifyChartType(const cv::Mat& roi, std::string* out, float* conf,
       if (t && m > 0.05f) { *out = t; *conf = 0.95f; }
     }
   }
+  return true;
+}
+
+// --- kNN de tipo de chart ---------------------------------------------------
+// Puerto de badge.chart_features / classify_chart_type_knn (piu_ocr). Medido LOSO en 55
+// bolitas reales: rangos de tono 0.909 → kNN 0.964 (solo-sintético también 0.964). En el
+// pipeline de referencia arrastra al nivel, porque los niveles legales dependen del tipo.
+static const char* kChartClasses[] = {"coop", "double", "halfdouble", "single"};
+static constexpr int kChartDim = 20;   // 18 bins de tono + S medio + V medio
+
+ChartBank ChartBank::load(const std::string& path) {
+  ChartBank b;
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return b;
+  char magic[4];
+  int32_t n = 0, dim = 0;
+  if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "PIUK", 4) != 0 ||
+      std::fread(&n, 4, 1, f) != 1 || std::fread(&dim, 4, 1, f) != 1 ||
+      n <= 0 || dim != kChartDim) {
+    std::fclose(f);
+    return b;
+  }
+  b.y.resize(n);
+  b.X.resize(size_t(n) * dim);
+  const bool ok = std::fread(b.y.data(), 4, n, f) == size_t(n) &&
+                  std::fread(b.X.data(), 4, b.X.size(), f) == b.X.size();
+  std::fclose(f);
+  if (!ok) return ChartBank();
+  b.dim = dim;
+  return b;
+}
+
+namespace {
+// Mismo rasgo que badge.chart_features en Python: mismos cortes (S > 80, V > 60), mismo disco,
+// histograma de tono con bins de 10 (H de OpenCV en 0..179) normalizado, y S/V medios / 255.
+bool chartFeatures(const cv::Mat& roi, float* f) {
+  if (roi.empty()) return false;
+  cv::Mat hsv;
+  cv::cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
+  const cv::Mat disk = discMask(hsv.rows, hsv.cols, DISC_R);
+  int total = 0;
+  double sumS = 0, sumV = 0;
+  float hist[18] = {0};
+  for (int y = 0; y < hsv.rows; ++y) {
+    const cv::Vec3b* r = hsv.ptr<cv::Vec3b>(y);
+    const uchar* d = disk.ptr<uchar>(y);
+    for (int x = 0; x < hsv.cols; ++x) {
+      const cv::Vec3b& p = r[x];
+      if (!d[x] || p[1] <= 80 || p[2] <= 60) continue;
+      hist[std::min(17, p[0] / 10)] += 1.f;
+      sumS += p[1];
+      sumV += p[2];
+      ++total;
+    }
+  }
+  if (total < 20) return false;
+  for (int i = 0; i < 18; ++i) f[i] = hist[i] / total;
+  f[18] = float(sumS / total / 255.0);
+  f[19] = float(sumV / total / 255.0);
+  return true;
+}
+}  // namespace
+
+bool classifyChartTypeKnn(const cv::Mat& roi, const ChartBank& bank, std::string* out,
+                          float* conf, int k, float minVotes) {
+  if (bank.empty()) return false;
+  float f[kChartDim];
+  if (!chartFeatures(roi, f)) return false;
+  const int n = int(bank.y.size());
+  std::vector<std::pair<float, int>> d(n);
+  for (int i = 0; i < n; ++i) {
+    const float* x = &bank.X[size_t(i) * bank.dim];
+    float s = 0.f;
+    for (int j = 0; j < kChartDim; ++j) s += std::fabs(x[j] - f[j]);
+    d[i] = {s, i};
+  }
+  k = std::min(k, n);
+  std::partial_sort(d.begin(), d.begin() + k, d.end());
+  int votes[4] = {0, 0, 0, 0};
+  for (int i = 0; i < k; ++i) {
+    const int c = bank.y[d[i].second];
+    if (c >= 0 && c < 4) ++votes[c];
+  }
+  // Empate → la clase de menor índice (= alfabéticamente menor), igual que np.unique + argmax.
+  int best = 0;
+  for (int c = 1; c < 4; ++c)
+    if (votes[c] > votes[best]) best = c;
+  const float v = float(votes[best]) / k;
+  if (v < minVotes) return false;
+  *out = kChartClasses[best];
+  *conf = v;
   return true;
 }
 

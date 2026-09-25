@@ -240,15 +240,21 @@ class PiuOcr private constructor(
         val v = j.optInt("score", -1)
         if (v < 0) return Field(null, 0f, "sin_glifos")
         val m = j.optDouble("score_margin", 0.0).toFloat()
-        return if (m >= MIN_SCORE_MARGIN) Field(v, m, null) else Field(null, m, "margen_bajo")
+        if (m >= MIN_SCORE_MARGIN) return Field(v, m, null)
+        // Acuerdo: una segunda lectura con otro recorte (ver pipeline.cpp) dio el mismo número.
+        val agree = j.optInt("score2", -2) == v
+        return if (agree && m >= MIN_SCORE_AGREE_MARGIN) Field(v, m, null)
+               else Field(null, m, "margen_bajo")
     }
 
     private fun readLevel(j: JSONObject, song: String?, chartType: String?,
                           matcher: SongMatcher): Field<Int> {
         val sc = j.optJSONArray("level_scores") ?: return Field(null, 0f, "sin_glifos")
         if (sc.length() == 0) return Field(null, 0f, "sin_glifos")
+        // La bolita dibuja siempre dos dígitos ("04"): un nivel legal de un dígito se compara con
+        // cero a la izquierda. Antes se filtraba por longitud y un 4 nunca podía ganar.
         val legal = song?.let { matcher.levelsFor(it, chartType) }.orEmpty()
-            .filter { it.toString().length == sc.length() }
+            .filter { it.toString().length <= sc.length() }
         if (legal.isEmpty()) {
             val d = j.optJSONArray("level_digits") ?: return Field(null, 0f, "sin_glifos")
             val v = (0 until d.length()).joinToString("") { d.getInt(it).toString() }
@@ -258,7 +264,7 @@ class PiuOcr private constructor(
             return if (v in 1..28) Field(v, 0f, null) else Field(null, 0f, "fuera_de_rango")
         }
         val scored = legal.map { cand ->
-            cand to cand.toString().withIndex().sumOf { (i, ch) ->
+            cand to cand.toString().padStart(sc.length(), '0').withIndex().sumOf { (i, ch) ->
                 sc.getJSONArray(i).optDouble(ch - '0', -1.0)
             }
         }.sortedByDescending { it.second }
@@ -308,10 +314,17 @@ class PiuOcr private constructor(
         // (ver pipeline.py MIN_SCORE_MARGIN_SAFE):
         //   0.020 -> cob 0.79 / prec 1.00
         //   0.010 -> cob 0.94 / prec 0.98
-        //   0.003 -> cob 0.94 / prec 0.88   <- este (2026-09-19, device v4: 63 fotos)
+        //   0.003 -> cob 0.94 / prec 0.88   (2026-09-19, device v4: 63 fotos)
         //   0.000 -> cob 1.00 / prec 0.83
-        // 0.003 recupera 7 scores correctos que 0.010 tiraba, a cambio de 1 malo.
-        const val MIN_SCORE_MARGIN = 0.003f
+        // 2026-09-25, con la SEGUNDA lectura del score (pipeline.cpp) y 115 scores con GT
+        // (63 nuevas + viejas), nativo host con yolo26_v5d:
+        //   0.003 sin acuerdo        -> 0.835 bien / 9.6 % errores aceptados
+        //   0.010 sin acuerdo        -> 0.774 / 4.3 %
+        //   0.010 + acuerdo (≥ 0.0)  -> 0.861 / 6.1 %   <- este: gana en las dos
+        const val MIN_SCORE_MARGIN = 0.010f
+        // Por debajo de MIN_SCORE_MARGIN se acepta igual si las dos lecturas del score coinciden
+        // (recortes distintos, mismo número) y el margen llega a este piso.
+        const val MIN_SCORE_AGREE_MARGIN = 0.0f
         // 0.35 no compraba precisión, solo la tiraba: sobre 55 bolitas 0.15 da
         // 0.873 y 0.35 da 0.655, porque convierte lecturas buenas en null.
         const val MIN_BADGE_CONF = 0.15f
@@ -338,8 +351,10 @@ class PiuOcr private constructor(
 
         // digits.bin ES obligatorio: Engine::load lo exige y sin él create() tiraba
         // para todo el mundo. Faltaba en esta lista desde que se agregó el score.
+        // chart_knn.bin: banco del kNN de tipo de chart (opcional en C++; sin él vuelve a los
+        // rangos de tono). Tiene que estar en la lista o no se copia del APK al disco.
         private val ASSETS = listOf("chars.bin", "level.bin", "digits.bin", "catalog.json",
-                                    "piu_yolo.param", "piu_yolo.bin")
+                                    "chart_knn.bin", "piu_yolo.param", "piu_yolo.bin")
 
         /**
          * Copia los assets a filesDir y crea el lector. Falla con

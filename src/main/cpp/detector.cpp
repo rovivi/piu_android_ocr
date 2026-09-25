@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace piu {
 namespace {
@@ -69,6 +70,27 @@ float iou(const Box& a, const Box& b) {
   return ua > 0 ? inter / ua : 0.f;
 }
 
+// El .param trae la cantidad de anchors en los Reshape de la cabeza ("0=33600"). Con strides
+// 8/16/32 un lienzo de lado s tiene s²·(1/64 + 1/256 + 1/1024) = s²·21/1024 anchors:
+// 33600 → 1280, 21504 → 1024. Si no se encuentra, se usa `fallback`.
+int imgszFromParam(const std::string& path, int fallback) {
+  FILE* f = std::fopen(path.c_str(), "r");
+  if (!f) return fallback;
+  char line[1024];
+  int best = 0;
+  while (std::fgets(line, sizeof line, f)) {
+    if (std::strncmp(line, "Reshape", 7) != 0) continue;
+    for (const char* p = std::strstr(line, " 0="); p; p = std::strstr(p + 1, " 0=")) {
+      const int k = std::atoi(p + 3);
+      const int s = int(std::lround(std::sqrt(double(k) * 1024.0 / 21.0)));
+      if (s % 32 == 0 && (s / 8) * (s / 8) + (s / 16) * (s / 16) + (s / 32) * (s / 32) == k)
+        best = std::max(best, s);
+    }
+  }
+  std::fclose(f);
+  return best > 0 ? best : fallback;
+}
+
 }  // namespace
 
 const std::vector<Aug>& defaultAugs() { return kAugs; }
@@ -89,6 +111,7 @@ bool Detector::load(const std::string& param, const std::string& bin) {
     net_ = nullptr;
     return false;
   }
+  imgsz_ = imgszFromParam(param, 1280);
   return true;
 }
 
@@ -96,7 +119,7 @@ std::vector<Box> Detector::detectOnce(const cv::Mat& bgr, int imgsz,
                                       float scale, bool flip) const {
   // Letterbox al tamaño del modelo, igual que ultralytics.
   const int W = bgr.cols, H = bgr.rows;
-  const int target = imgsz;                      // forma fija, ver kAugs
+  const int target = imgsz > 0 ? imgsz : imgsz_;  // forma fija, ver kAugs
   const float r = std::min(float(target) / W, float(target) / H) * scale;
   const int nw = int(std::round(W * r)), nh = int(std::round(H * r));
   cv::Mat resized;
