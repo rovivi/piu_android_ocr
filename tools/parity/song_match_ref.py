@@ -20,7 +20,7 @@ import unicodedata
 
 # Mismo orden de operaciones que normalize() de Kotlin/song_match.py: NFD, sin
 # diacríticos, minúsculas, todo lo que no sea [a-z0-9] es espacio, colapsar.
-_NON_ALNUM = re.compile(r"[^a-z0-9\s]")
+_NON_ALNUM = re.compile(r"[^a-z0-9\s\uac00-\ud7a3]")
 _SPACES = re.compile(r"\s+")
 
 # Pesos del matcher y tamaño del prefiltro: ver SongMatcher.kt y ARQUITECTURA §8.
@@ -32,6 +32,8 @@ CHART_KEY = {"single": "s", "double": "d", "halfdouble": "hd", "coop": "c"}
 def normalize(s: str) -> str:
     s = unicodedata.normalize("NFD", s or "")
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    # Recompone las sílabas Hangul que NFD partió en jamo; no-op en latino.
+    s = unicodedata.normalize("NFC", s)
     return _SPACES.sub(" ", _NON_ALNUM.sub(" ", s.lower())).strip()
 
 

@@ -9,17 +9,46 @@
 namespace piu {
 namespace {
 
+// Una etiqueta de chars.bin es un código Unicode; el texto viaja en UTF-8.
+// Con plantillas solo ASCII esto es el mismo byte de siempre; hace falta para
+// que una plantilla Hangul (U+AC00..U+D7A3) no se corte a un byte suelto.
+void appendUtf8(std::string& o, int cp) {
+  if (cp < 0x80) { o += char(cp); }
+  else if (cp < 0x800) { o += char(0xC0 | (cp >> 6)); o += char(0x80 | (cp & 63)); }
+  else if (cp < 0x10000) {
+    o += char(0xE0 | (cp >> 12)); o += char(0x80 | ((cp >> 6) & 63));
+    o += char(0x80 | (cp & 63));
+  } else {
+    o += char(0xF0 | (cp >> 18)); o += char(0x80 | ((cp >> 12) & 63));
+    o += char(0x80 | ((cp >> 6) & 63)); o += char(0x80 | (cp & 63));
+  }
+}
+
 // JSON válido siempre: además de " y \, escapa controles y todo lo que no sea
-// ASCII como \uXXXX. Las etiquetas de chars.bin son códigos de carácter y un
-// byte suelto >= 0x80 rompería el parser de JSONObject.
+// ASCII como \uXXXX del CÓDIGO (no del byte), así JSONObject devuelve el
+// carácter original. Entrada en UTF-8 (ver appendUtf8). Fuera del BMP no hay
+// plantillas; un código así sale como U+FFFD.
 std::string esc(const std::string& s) {
   static const char* hex = "0123456789abcdef";
   std::string o;
   o.reserve(s.size() + 8);
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') { o += '\\'; o += char(c); }
-    else if (c >= 0x20 && c < 0x7f) o += char(c);
-    else { o += "\\u00"; o += hex[c >> 4]; o += hex[c & 15]; }
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = s[i];
+    if (c < 0x80) {
+      if (c == '"' || c == '\\') { o += '\\'; o += char(c); }
+      else if (c >= 0x20 && c < 0x7f) o += char(c);
+      else { o += "\\u00"; o += hex[c >> 4]; o += hex[c & 15]; }
+      ++i;
+      continue;
+    }
+    const int n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    int cp = n == 4 ? c & 7 : n == 3 ? c & 15 : n == 2 ? c & 31 : 0xFFFD;
+    for (int k = 1; k < n; ++k)
+      cp = i + k < s.size() ? (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 63) : 0xFFFD;
+    if (cp > 0xFFFF) cp = 0xFFFD;
+    o += "\\u";
+    for (int sh = 12; sh >= 0; sh -= 4) o += hex[(cp >> sh) & 15];
+    i += n;
   }
   return o;
 }
@@ -243,7 +272,7 @@ std::string Engine::read(const cv::Mat& img, const std::vector<Box>* given,
       std::vector<int> lab; std::vector<float> mar;
       chars_.predict(gs, &lab, &mar);
       std::string t;
-      for (int L : lab) t += char(L);
+      for (int L : lab) appendUtf8(t, L);
       return t;
     };
     const std::string txt = readGlyphs(variants[0]);

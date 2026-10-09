@@ -17,10 +17,18 @@ import kotlin.math.round
  */
 class SongMatcher(catalogJson: String) {
 
-    data class Song(val name: String, val charts: List<Pair<String, Int>>) {
+    /** @param nameKr título en modo coreano (`"k"` del catálogo), si se conoce. */
+    data class Song(
+        val name: String,
+        val charts: List<Pair<String, Int>>,
+        val nameKr: String? = null,
+    ) {
         val norm = normalize(name)
         val trigrams = trigramsOf(norm)
         val compact = norm.replace(" ", "")
+        private val normKr = nameKr?.let(::normalize).orEmpty()
+        val trigramsKr = if (normKr.isEmpty()) emptySet() else trigramsOf(normKr)
+        val compactKr = normKr.replace(" ", "")
     }
 
     data class Candidate(val name: String, val score: Double, val levels: List<Int>)
@@ -38,7 +46,7 @@ class SongMatcher(catalogJson: String) {
                     if (!c.isNull(1)) add(c.getString(0) to c.getInt(1))
                 }
             }
-            Song(o.getString("n"), charts)
+            Song(o.getString("n"), charts, o.optString("k").ifEmpty { null })
         }.toList()
     }
 
@@ -54,6 +62,13 @@ class SongMatcher(catalogJson: String) {
         if (q.isEmpty()) return emptyList()
         val qt = trigramsOf(q)
         val qc = q.replace(" ", "")
+        // Una lectura con Hangul se compara contra el título coreano y una
+        // latina contra el de siempre: sin mezclar, el camino latino es
+        // idéntico al de antes (ParityTest) y el candidato sigue saliendo con
+        // el nombre de pantalla `n`, que es el que la app conoce.
+        val korean = q.any { it in HANGUL_FIRST..HANGUL_LAST }
+        val trigramsOf = { s: Song -> if (korean) s.trigramsKr else s.trigrams }
+        val compactOf = { s: Song -> if (korean) s.compactKr else s.compact }
 
         // chartType NO filtra el pool: en Catalog.match de Python el step type
         // solo actúa junto con el nivel (_charts_allow devuelve True sin
@@ -67,14 +82,15 @@ class SongMatcher(catalogJson: String) {
         // solo se paga la parte cara sobre la cabeza. Medido, 60/120/240 y sin
         // prefiltro dan el mismo top-1.
         if (pool.size > PREFILTER) {
-            pool = pool.sortedByDescending { jaccard(qt, it.trigrams) }.take(PREFILTER)
+            pool = pool.sortedByDescending { jaccard(qt, trigramsOf(it)) }.take(PREFILTER)
         }
 
         return pool.map { s ->
-            val tri = jaccard(qt, s.trigrams)
-            val ratio = similarity(qc, s.compact)
-            val partial = longestCommon(qc, s.compact).toDouble() /
-                max(min(qc.length, s.compact.length), 1)
+            val compact = compactOf(s)
+            val tri = jaccard(qt, trigramsOf(s))
+            val ratio = similarity(qc, compact)
+            val partial = longestCommon(qc, compact).toDouble() /
+                max(min(qc.length, compact.length), 1)
             // round(sc, 4) como en Catalog.match: el gate de margen (0.015)
             // se decide en el cuarto decimal y sin esto Kotlin y Python
             // divergían en 3 de 90 fotos (ParityTest).
@@ -140,16 +156,23 @@ class SongMatcher(catalogJson: String) {
 
         // Precompiladas: normalize corre 675 veces al cargar el catálogo y en
         // cada match; Regex(...) inline compilaba el patrón cada vez.
-        private val NON_ALNUM = Regex("[^a-z0-9\\s]")
+        private const val HANGUL_FIRST = '\uAC00'
+        private const val HANGUL_LAST = '\uD7A3'
+        private val NON_ALNUM = Regex("[^a-z0-9\\s\uAC00-\uD7A3]")
         private val SPACES = Regex("\\s+")
 
         private val MARKS = Regex("\\p{Mn}+")
 
         /** Igual a song_match.normalize: NFD, sin diacríticos, minúsculas,
          *  todo lo que no sea [a-z0-9] es espacio. Sin el NFD, "é" se volvía
-         *  espacio acá y "e" en Python. */
+         *  espacio acá y "e" en Python. Las sílabas Hangul sobreviven: NFD las
+         *  parte en jamo (no son marcas) y el NFC las recompone; en texto
+         *  latino, ya sin marcas, el NFC no cambia nada. */
         fun normalize(s: String): String =
-            Normalizer.normalize(s, Normalizer.Form.NFD).replace(MARKS, "").lowercase()
+            Normalizer.normalize(
+                Normalizer.normalize(s, Normalizer.Form.NFD).replace(MARKS, ""),
+                Normalizer.Form.NFC,
+            ).lowercase()
                 .replace(NON_ALNUM, " ")
                 .replace(SPACES, " ").trim()
 
