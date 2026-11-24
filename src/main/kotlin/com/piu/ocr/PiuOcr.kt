@@ -3,6 +3,7 @@ package com.piu.ocr
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
+import android.system.Os
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.sqrt
@@ -289,6 +290,15 @@ class PiuOcr private constructor(
         @Synchronized
         private fun ensureLoaded(context: Context) {
             if (loaded) return
+            // ANTES de cargar el .so: libomp (estático, viene con opencv-mobile)
+            // lee su entorno una sola vez y puede ser en los constructores
+            // estáticos del dlopen, así que JNI_OnLoad ya es tarde. Sin esto, en
+            // algunos teléfonos el primer cvtColor aborta el proceso entero:
+            // __kmp_create_affinity_none_places -> KMP_ASSERT(__kmp_avail_proc ==
+            // num_hw_threads) cuando la máscara de CPUs del hilo no coincide con
+            // la topología detectada. Ningún try/catch lo ve. El módulo nunca
+            // fijó hilos a cores, así que apagar la afinidad no cuesta nada.
+            runCatching { Os.setenv("KMP_AFFINITY", "disabled", false) }
             try {
                 val helper = Class.forName(
                     "com.google.android.play.core.splitcompat.SplitInstallHelper")
